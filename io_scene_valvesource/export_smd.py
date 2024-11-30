@@ -18,13 +18,13 @@
 #
 # ##### END GPL LICENSE BLOCK #####
 
-import bpy, bmesh, subprocess, collections
+import bpy, bmesh, subprocess, collections, re
 from bpy import ops
 from bpy.app.translations import pgettext
-from mathutils import *
+from mathutils import Vector, Matrix
 from math import *
 from bpy.types import Collection
-from bpy.props import *
+from bpy.props import CollectionProperty, StringProperty, BoolProperty
 
 from .utils import *
 from . import datamodel, ordered_set, flex
@@ -38,13 +38,13 @@ class SMD_OT_Compile(bpy.types.Operator, Logger):
 	directory : StringProperty(maxlen=1024, default="", subtype='FILE_PATH')
 
 	filepath : StringProperty(name="File path", maxlen=1024, default="", subtype='FILE_PATH')
-
+	
 	filter_folder : BoolProperty(default=True, options={'HIDDEN'})
 	filter_glob : StringProperty(default="*.qc;*.qci", options={'HIDDEN'})
-
+	
 	@classmethod
 	def poll(cls,context):
-		return p_cache.gamepath_valid and p_cache.enginepath_valid
+		return State.gamePath is not None and State.compiler == Compiler.STUDIOMDL
 
 	def invoke(self,context, event):
 		bpy.context.window_manager.fileselect_add(self)
@@ -59,12 +59,12 @@ class SMD_OT_Compile(bpy.types.Operator, Logger):
 		num = self.compileQCs([os.path.join(self.properties.directory,file.name) for file in self.properties.files] if multi_files else self.properties.filepath)
 		#if num > 1:
 		#	bpy.context.window_manager.progress_begin(0,1)
-		self.errorReport(get_id("qc_compile_complete",True).format(num,getEngineBranchName()))
+		self.errorReport(get_id("qc_compile_complete",True).format(num,State.engineBranchTitle))
 		bpy.context.window_manager.progress_end()
 		return {'FINISHED'}
-
+	
 	@classmethod
-	def getQCs(cls,path = None):
+	def getQCs(cls, path : str = None) -> list:
 		import glob
 		ext = ".qc"
 		out = []
@@ -77,21 +77,23 @@ class SMD_OT_Compile(bpy.types.Operator, Logger):
 				out.append(result)
 
 		if not internal and not len(out) and not path.endswith(ext):
-			out = getQCs(path + ext)
+			out = cls.getQCs(path + ext)
 		return out
-
+	
 	def compileQCs(self,path=None):
 		scene = bpy.context.scene
 		print("\n")
 
 		studiomdl_path = os.path.join(bpy.path.abspath(scene.vs.engine_path),"studiomdl.exe")
 
-		if isinstance(path,str) and path != "*":
+		if path == "*":
+			paths = SMD_OT_Compile.getQCs()
+		elif isinstance(path,str):
 			paths = [os.path.realpath(bpy.path.abspath(path))]
 		elif hasattr(path,"__getitem__"):
 			paths = path
 		else:
-			paths = p_cache.qc_paths = SMD_OT_Compile.getQCs()
+			paths = SMD_OT_Compile.getQCs()
 		num_good_compiles = 0
 		num_qcs = len(paths)
 		if num_qcs == 0:
@@ -112,9 +114,9 @@ class SMD_OT_Compile(bpy.types.Operator, Logger):
 						ops.text.save()
 						bpy.context.area.type = oldType
 						break #what a farce!
-
+				
 				print( "Running studiomdl for \"{}\"...\n".format(os.path.basename(qc)) )
-				studiomdl = subprocess.Popen([studiomdl_path, "-nop4", "-game", getGamePath(), qc])
+				studiomdl = subprocess.Popen([studiomdl_path, "-nop4", "-game", State.gamePath, qc])
 				studiomdl.communicate()
 
 				if studiomdl.returncode == 0:
@@ -125,46 +127,46 @@ class SMD_OT_Compile(bpy.types.Operator, Logger):
 		return num_good_compiles
 
 class SmdExporter(bpy.types.Operator, Logger):
-	get_id("exporter_tip")
 	bl_idname = "export_scene.smd"
 	bl_label = get_id("exporter_title")
-
+	bl_description = get_id("exporter_tip")
+	
 	collection : bpy.props.StringProperty(name=get_id("exporter_prop_group"),description=get_id("exporter_prop_group_tip"))
 	export_scene : bpy.props.BoolProperty(name=get_id("scene_export"),description=get_id("exporter_prop_scene_tip"),default=False)
 
 	@classmethod
 	def poll(cls,context):
 		return len(context.scene.vs.export_list)
-
+		
 	def invoke(self, context, event):
-		scene_update(context.scene, immediate=True)
+		State.update_scene()
 		ops.wm.call_menu(name="SMD_MT_ExportChoice")
 		return {'PASS_THROUGH'}
 
 	def execute(self, context):
 		#bpy.context.window_manager.progress_begin(0,1)
-
+		
 		# Misconfiguration?
-		if allowDMX() and context.scene.vs.export_format == 'DMX':
-			datamodel.check_support("binary",DatamodelEncodingVersion())
-			if DatamodelEncodingVersion() < 3 and DatamodelFormatVersion() > 11:
-				self.report({'ERROR'},"DMX format \"Model {}\" requires DMX encoding \"Binary 3\" or later".format(DatamodelFormatVersion()))
+		if State.datamodelEncoding != 0 and context.scene.vs.export_format == 'DMX':
+			datamodel.check_support("binary",State.datamodelEncoding)
+			if State.datamodelEncoding < 3 and State.datamodelFormat > 11 and not context.scene.vs.use_kv2:
+				self.report({'ERROR'},"DMX format \"Model {}\" requires DMX encoding \"Binary 3\" or later".format(State.datamodelFormat))
 				return {'CANCELLED' }
-		if len(context.scene.vs.export_path) == 0:
+		if not context.scene.vs.export_path:
 			bpy.ops.wm.call_menu(name="SMD_MT_ConfigureScene")
 			return {'CANCELLED'}
 		if context.scene.vs.export_path.startswith("//") and not context.blend_data.filepath:
 			self.report({'ERROR'},get_id("exporter_err_relativeunsaved"))
 			return {'CANCELLED'}
-		if allowDMX() and context.scene.vs.export_format == 'DMX' and not canExportDMX():
+		if State.datamodelEncoding == 0 and context.scene.vs.export_format == 'DMX':
 			self.report({'ERROR'},get_id("exporter_err_dmxother"))
 			return {'CANCELLED'}
-
+		
 		# Don't create an undo level from edit mode
 		prev_mode = prev_hidden = None
 		if context.active_object:
 			if context.active_object.hide_viewport:
-				prev_hidden = context.active_object
+				prev_hidden = context.active_object.name
 				context.active_object.hide_viewport = False
 			prev_mode = context.mode
 			if prev_mode.find("EDIT") != -1: prev_mode = 'EDIT'
@@ -173,33 +175,35 @@ class SmdExporter(bpy.types.Operator, Logger):
 				prev_mode.reverse()
 				prev_mode = "_".join(prev_mode)
 			ops.object.mode_set(mode='OBJECT')
-
-		scene_update(context.scene, immediate=True)
+		
+		State.update_scene()
 		self.bake_results = []
 		self.bone_ids = {}
 		self.materials_used = set()
-
+		
 		for ob in [ob for ob in bpy.context.scene.objects if ob.type == 'ARMATURE' and len(ob.vs.subdir) == 0]:
 			ob.vs.subdir = "anims"
-
+		
 		ops.ed.undo_push(message=self.bl_label)
-
+				
 		try:
 			context.tool_settings.use_keyframe_insert_auto = False
 			context.tool_settings.use_keyframe_insert_keyingset = False
 			context.preferences.edit.use_enter_edit_mode = False
-			unhook_scene_update()
+			State.unhook_events()
 			if context.scene.rigidbody_world:
 				context.scene.frame_set(context.scene.rigidbody_world.point_cache.frame_start)
-
+			
 			# lots of operators only work on visible objects
-			for object in context.scene.objects:
-				object.hide_viewport = False
-
+			for ob in context.scene.objects:
+				ob.hide_viewport = False
+			# ensure that objects in all collections are accessible to operators
+			context.view_layer.layer_collection.exclude = False
+			
 			self.files_exported = self.attemptedExports = 0
-
+			
 			if self.export_scene:
-				for id in [exportable.get_id() for exportable in context.scene.vs.export_list]:
+				for id in [exportable.item for exportable in context.scene.vs.export_list]:
 					if type(id) == Collection:
 						if shouldExportGroup(id):
 							self.exportId(context, id)
@@ -208,32 +212,33 @@ class SmdExporter(bpy.types.Operator, Logger):
 			else:
 				if self.collection == "":
 					for exportable in getSelectedExportables():
-						self.exportId(context, exportable.get_id())
+						if type(exportable.item) != Collection:
+							self.exportId(context, exportable.item)
 				else:
 					collection = bpy.data.collections[self.collection]
 					if collection.vs.mute: self.error(get_id("exporter_err_groupmuted", True).format(collection.name))
 					elif not collection.objects: self.error(get_id("exporter_err_groupempty", True).format(collection.name))
 					else: self.exportId(context, collection)
-
+			
 			num_good_compiles = None
 
 			if self.attemptedExports == 0:
-				self.report('ERROR',get_id("exporter_err_noexportables"))
+				self.report({'ERROR'},get_id("exporter_err_noexportables"))
 			elif context.scene.vs.qc_compile and context.scene.vs.qc_path:
 				# ...and compile the QC
 				if not SMD_OT_Compile.poll(context):
 					print("Skipping QC compile step: context incorrect\n")
 				else:
-					num_good_compiles = SMD_OT_Compile.compileQCs(self)
+					num_good_compiles = SMD_OT_Compile.compileQCs(self) # hack, use self as the logger
 					print("\n")
-
+			
 			if num_good_compiles != None:
 				self.errorReport(get_id("exporter_report_qc", True).format(
 						self.files_exported,
 						self.elapsed_time(),
 						num_good_compiles,
-						getEngineBranchName(),
-						os.path.basename(getGamePath())
+						State.engineBranchTitle,
+						os.path.basename(State.gamePath)
 						))
 			else:
 				self.errorReport(get_id("exporter_report", True).format(
@@ -244,15 +249,15 @@ class SmdExporter(bpy.types.Operator, Logger):
 			# Clean everything up
 			ops.ed.undo_push(message=self.bl_label)
 			if bpy.app.debug_value <= 1: ops.ed.undo()
-
+			
 			if prev_mode:
 				ops.object.mode_set(mode=prev_mode)
 			if prev_hidden:
-				prev_hidden.hide_viewport = True
-			bpy.context.scene.update_tag()
-
-			bpy.context.window_manager.progress_end()
-			hook_scene_update()
+				context.scene.objects[prev_hidden].hide_viewport = True
+			context.scene.update_tag()
+			
+			context.window_manager.progress_end()
+			State.hook_events()
 
 		self.collection = ""
 		self.export_scene = False
@@ -260,23 +265,23 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 	def sanitiseFilename(self,name):
 		new_name = name
-		for badchar in "/?<>\:*|\"":
+		for badchar in "/?<>\\:*|\"":
 			new_name = new_name.replace(badchar,"_")
 		if new_name != name:
 			self.warning(get_id("exporter_warn_sanitised_filename",True).format(name,new_name))
 		return new_name
-
+	
 	def exportId(self,context,id):
 		self.attemptedExports += 1
 		self.armature = self.armature_src = None
 		bench = BenchMarker()
-
+		
 		subdir = id.vs.subdir
-
+		
 		print( "\nBlender Source Tools: exporting {}".format(id.name) )
-
+				
 		subdir = subdir.lstrip("/") # don't want //s here!
-
+		
 		path = os.path.join(bpy.path.abspath(context.scene.vs.export_path), subdir)
 		if not os.path.exists(path):
 			try:
@@ -288,7 +293,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 		if isinstance(id, bpy.types.Collection) and not any(ob.vs.export for ob in id.objects):
 			self.error(get_id("exporter_err_nogroupitems",True).format(id.name))
 			return
-
+		
 		if isinstance(id, bpy.types.Object) and id.type == 'ARMATURE':
 			ad = id.animation_data
 			if not ad: return # otherwise we create a folder but put nothing in it
@@ -301,8 +306,8 @@ class SmdExporter(bpy.types.Operator, Logger):
 			else:
 				self.error(get_id("exporter_err_arm_noanims",True).format(id.name))
 		else:
-			export_name = id.name
-
+			export_name = id.name		
+			
 		# hide all metaballs that we don't want
 		for meta in [ob for ob in context.scene.objects if ob.type == 'META' and (not ob.vs.export or (isinstance(id, Collection) and not ob.name in id.objects))]:
 			for element in meta.data.elements: element.hide = True
@@ -328,24 +333,23 @@ class SmdExporter(bpy.types.Operator, Logger):
 				except ValueError:
 					pass
 			return basis
-
+		
 		bake_results = []
 		baked_metaballs = []
-
+		
 		bench.report("setup")
-
+		
 		if bench.quiet: print("- Baking...")
 
 		if type(id) == Collection:
-			have_baked_metaballs = False
 			group_vertex_maps = valvesource_vertex_maps(id)
-			for i, ob in enumerate([ob for ob in id.objects if ob.vs.export and ob in p_cache.validObs]):
+			for i, ob in enumerate([ob for ob in id.objects if ob.vs.export and ob.session_uid in State.exportableObjects]):
 				bpy.context.window_manager.progress_update(i / len(id.objects))
 				if ob.type == 'META':
 					ob = find_basis_metaball(ob)
 					if ob in baked_metaballs: continue
 					else: baked_metaballs.append(ob)
-
+						
 				bake = self.bakeObj(ob)
 				for vertex_map_name in group_vertex_maps:
 					if not vertex_map_name in bake.object.data.vertex_colors:
@@ -357,7 +361,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 			bench.report("Group bake", len(bake_results))
 		else:
 			if id.type == 'META':
-				bake = self.bakeObj(find_basis_metaball(id))
+				bake = self.bakeObj(find_basis_metaball(id))				
 				bench.report("Metaball bake")
 			else:
 				bake = self.bakeObj(id)
@@ -368,14 +372,15 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 		if not any(bake_results):
 			return
-
-		if shouldExportDMX() and hasShapes(id):
+		
+		if State.exportFormat == ExportFormat.DMX and hasShapes(id):
 			self.flex_controller_mode = id.vs.flex_controller_mode
 			self.flex_controller_source = id.vs.flex_controller_source
 
+		bpy.context.view_layer.objects.active = bake_results[0].object
 		bpy.ops.object.mode_set(mode='OBJECT')
 		mesh_bakes = [bake for bake in bake_results if bake.object.type == 'MESH']
-
+		
 		skip_vca = False
 		if isinstance(id, Collection) and len(id.vs.vertex_animations) and len(id.objects) > 1:
 			if len(mesh_bakes) > len([bake for bake in bake_results if (type(bake.envelope) is str and bake.envelope == bake_results[0].envelope) or bake.envelope is None]):
@@ -387,7 +392,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 		for va in id.vs.vertex_animations:
 			if skip_vca: break
 
-			if shouldExportDMX():
+			if State.exportFormat == ExportFormat.DMX:
 				va.name = va.name.replace("_","-")
 
 			vca = bake_results[0].vertex_animations[va.name] # only the first bake result will ever have a vertex animation defined
@@ -396,7 +401,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 			two_percent = vca.num_frames * len(bake_results) / 50
 			print("- Generating vertex animation \"{}\"".format(va.name))
 			anim_bench = BenchMarker(1,va.name)
-
+			
 			for f in range(va.start,va.end):
 				bpy.context.scene.frame_set(f)
 				bpy.ops.object.select_all(action='DESELECT')
@@ -411,29 +416,29 @@ class SmdExporter(bpy.types.Operator, Logger):
 					top_parent = self.getTopParent(bake.src)
 					if top_parent:
 						bake.fob.location -= top_parent.location
-
+					
 					if context.scene.rigidbody_world:
 						# Blender 2.71 bug: https://developer.blender.org/T41388
 						prev_rbw = bpy.context.scene.rigidbody_world.enabled
 						bpy.context.scene.rigidbody_world.enabled = False
 
 					bpy.ops.object.transform_apply(location=True,scale=True,rotation=True)
-
+				
 					if context.scene.rigidbody_world:
 						bpy.context.scene.rigidbody_world.enabled = prev_rbw
 
-				if bpy.context.selected_objects and not shouldExportDMX():
+				if bpy.context.selected_objects and State.exportFormat == ExportFormat.SMD:
 					bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
 					ops.object.join()
-
+				
 				vca.append(bpy.context.active_object if len(bpy.context.selected_objects) == 1 else bpy.context.selected_objects)
 				anim_bench.report("bake")
-
+				
 				if len(bpy.context.selected_objects) != 1:
 					for bake in mesh_bakes:
 						bpy.context.scene.collection.objects.unlink(bake.fob)
 						del bake.fob
-
+				
 				anim_bench.report("record")
 
 				if two_percent and len(vca) / len(bake_results) % two_percent == 0:
@@ -443,32 +448,29 @@ class SmdExporter(bpy.types.Operator, Logger):
 			bench.report("\n" + va.name)
 			bpy.context.view_layer.objects.active = bake_results[0].src
 
-		if isinstance(id, Collection) and shouldExportDMX() and id.vs.automerge:
+		if isinstance(id, Collection) and State.exportFormat == ExportFormat.DMX and id.vs.automerge:
 			bone_parents = collections.defaultdict(list)
 			scene_obs = bpy.context.scene.collection.objects
 			view_obs = bpy.context.view_layer.objects
 			for bake in [bake for bake in bake_results if type(bake.envelope) is str or bake.envelope is None]:
 				bone_parents[bake.envelope].append(bake)
-
+				
 			for bp, parts in bone_parents.items():
 				if len(parts) <= 1: continue
 				shape_names = set()
 				for key in [key for part in parts for key in part.shapes.keys()]:
 					shape_names.add(key)
-
+					
 				ops.object.select_all(action='DESELECT')
 				for part in parts:
 					ob = part.object.copy()
 					ob.data = ob.data.copy()
-					i = 0
-					for uvs in ob.data.uv_layers:
-						uvs.name = "__dmx_uv__" + i
-						i +=1
+					ob.data.uv_layers.active.name = "__dmx_uv__"
 					scene_obs.link(ob)
 					ob.select_set(True)
 					view_obs.active = ob
 					bake_results.remove(part)
-
+					
 				bpy.ops.object.join()
 				joined = self.BakeResult(bp + "_meshes" if bp else "loose_meshes")
 				joined.object = bpy.context.active_object
@@ -494,12 +496,12 @@ class SmdExporter(bpy.types.Operator, Logger):
 							bpy.ops.object.transform_apply(location=True,scale=True,rotation=True)
 							vca.append(bpy.context.active_object)
 							scene_obs.unlink(bpy.context.active_object)
-
+				
 				bake_results.append(joined)
-
+					
 				for shape_name in shape_names:
 					ops.object.select_all(action='DESELECT')
-
+						
 					for part in parts:
 						mesh = part.shapes[shape_name] if shape_name in part.shapes else part.object.data
 						ob = bpy.data.objects.new(name="{} -> {}".format(part.name,shape_name),object_data = mesh.copy())
@@ -507,15 +509,15 @@ class SmdExporter(bpy.types.Operator, Logger):
 						ob.matrix_local = part.matrix
 						ob.select_set(True)
 						view_obs.active = ob
-
+						
 					bpy.ops.object.join()
 					joined.shapes[shape_name] = bpy.context.active_object.data
 					bpy.context.active_object.data.name = "{} -> {}".format(joined.object.name,shape_name)
-
+						
 					scene_obs.unlink(ob)
 					bpy.data.objects.remove(ob)
 					del ob
-
+						
 				view_obs.active = joined.object
 			bench.report("Mech merge")
 
@@ -538,7 +540,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 			if skipped_bones:
 				print("- Skipping {} non-deforming bones".format(skipped_bones))
 
-		write_func = self.writeDMX if shouldExportDMX() else self.writeSMD
+		write_func = self.writeDMX if State.exportFormat == ExportFormat.DMX else self.writeSMD
 		bench.report("Post Bake")
 
 		if isinstance(id, bpy.types.Object) and id.type == 'ARMATURE' and id.data.vs.action_selection == 'FILTERED':
@@ -549,7 +551,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 		else:
 			self.files_exported += write_func(id, bake_results, self.sanitiseFilename(export_name), path)
 			bench.report(write_func.__name__)
-
+		
 		# Source doesn't handle Unicode characters in models. Detect any unicode strings and warn the user about them.
 		unicode_tested = set()
 		def test_for_unicode(name, id, display_type):
@@ -561,6 +563,11 @@ class SmdExporter(bpy.types.Operator, Logger):
 			except UnicodeEncodeError:
 				self.warning(get_id("exporter_warn_unicode", format_string=True).format(pgettext(display_type), name))
 
+		# Meanwhile, Source 2 wants only lowercase characters, digits, and underscore in model names
+		if State.compiler > Compiler.STUDIOMDL or State.datamodelFormat >= 22:
+			if re.match(r'[^a-z0-9_]', id.name):
+				self.warning(get_id("exporter_warn_source2names", format_string=True).format(id.name))
+
 		for bake in bake_results:
 			test_for_unicode(bake.name, bake, type(bake.src).__name__)
 			for shape_name, shape_id in bake.shapes.items():
@@ -571,20 +578,20 @@ class SmdExporter(bpy.types.Operator, Logger):
 		for mat in self.materials_used:
 			test_for_unicode(mat[0], mat[1], type(mat[1]).__name__)
 
-
+		
 	def getWeightmap(self,bake_result):
 		out = []
 		amod = bake_result.envelope
 		ob = bake_result.object
 		if not amod or not isinstance(amod, bpy.types.ArmatureModifier): return out
-
+		
 		amod_vg = ob.vertex_groups.get(amod.vertex_group)
 
 		try:
 			amod_ob = next((bake.object for bake in self.bake_results if bake.src == amod.object))
 		except StopIteration as e:
 			raise ValueError("Armature for exportable \"{}\" was not baked".format(bake_result.name)) from e
-
+		
 		model_mat = amod_ob.matrix_world.inverted() @ ob.matrix_world
 
 		num_verts = len(ob.data.vertices)
@@ -592,33 +599,33 @@ class SmdExporter(bpy.types.Operator, Logger):
 			weights = []
 			total_weight = 0
 			if len(out) % 50 == 0: bpy.context.window_manager.progress_update(len(out) / num_verts)
-
+			
 			if amod.use_vertex_groups:
 				for v_group in v.groups:
 					if v_group.group < len(ob.vertex_groups):
 						ob_group = ob.vertex_groups[v_group.group]
 						group_name = ob_group.name
-						group_weight = v_group.weight
+						group_weight = v_group.weight					
 					else:
-						continue # Vertex group might not exist on object if it's re-using a datablock
+						continue # Vertex group might not exist on object if it's re-using a datablock				
 
 					bone = amod_ob.pose.bones.get(group_name)
 					if bone and bone in self.exportable_bones:
 						weights.append([ self.bone_ids[bone.name], group_weight ])
-						total_weight += group_weight
-
+						total_weight += group_weight			
+					
 			if amod.use_bone_envelopes and total_weight == 0: # vertex groups completely override envelopes
 				for pose_bone in [pb for pb in amod_ob.pose.bones if pb in self.exportable_bones]:
 					weight = pose_bone.bone.envelope_weight * pose_bone.evaluate_envelope( model_mat @ v.co )
 					if weight:
 						weights.append([ self.bone_ids[pose_bone.name], weight ])
 						total_weight += weight
-
+				
 			# normalise weights, like Blender does. Otherwise Studiomdl puts anything left over onto the root bone.
 			if total_weight not in [0,1]:
 				for link in weights:
 					link[1] *= 1/total_weight
-
+			
 			# apply armature modifier vertex group
 			if amod_vg and total_weight > 0:
 				amod_vg_weight = 0
@@ -633,12 +640,12 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 			out.append(weights)
 		return out
-
-	def GetMaterialName(self, ob, poly):
+		
+	def GetMaterialName(self, ob, material_index):
 		mat_name = None
 		mat_id = None
-		if len(ob.material_slots) > poly.material_index:
-			mat_id = ob.material_slots[poly.material_index].material
+		if len(ob.material_slots) > material_index:
+			mat_id = ob.material_slots[material_index].material
 			if mat_id:
 				mat_name = mat_id.name
 		if mat_name:
@@ -653,6 +660,12 @@ class SmdExporter(bpy.types.Operator, Logger):
 			top_parent = top_parent.parent
 		return top_parent
 
+	def getEvaluatedPoseBones(self):
+		depsgraph = bpy.context.evaluated_depsgraph_get()
+		evaluated_armature = self.armature.evaluated_get(depsgraph)
+
+		return [evaluated_armature.pose.bones[bone.name] for bone in self.exportable_bones]	
+
 	class BakedVertexAnimation(list):
 		def __init__(self):
 			self.export_sequence = False
@@ -665,81 +678,106 @@ class SmdExporter(bpy.types.Operator, Logger):
 			self.co = co
 			self.norm = norm
 
-	class BakeResult:
+	class BakeResult:		
 		def __init__(self,name):
 			self.name = name
 			self.object = None
 			self.matrix = Matrix()
 			self.envelope = None
+			self.bone_parent_matrix = None
 			self.src = None
 			self.armature = None
 			self.balance_vg = None
 			self.shapes = collections.OrderedDict()
 			self.shape_keys = collections.OrderedDict()
 			self.vertex_animations = collections.defaultdict(SmdExporter.BakedVertexAnimation)
-
+			
 	# Creates a mesh with object transformations and modifiers applied
 	def bakeObj(self,id, generate_uvs = True):
 		for bake in (bake for bake in self.bake_results if bake.src == id or bake.object == id):
 			return bake
-
+		
 		result = self.BakeResult(id.name)
 		result.src = id
 		self.bake_results.append(result)
 
-		select_only(id)
+		try:
+			select_only(id)
+		except RuntimeError:
+			self.warning(get_id("exporter_err_hidden", True).format(id.name))
+			return
 
-		should_triangulate = not shouldExportDMX() or id.vs.triangulate
+		should_triangulate = State.exportFormat == ExportFormat.SMD or id.vs.triangulate
 
 		def triangulate():
 			ops.object.mode_set(mode='EDIT')
 			ops.mesh.select_all(action='SELECT')
 			ops.mesh.quads_convert_to_tris(quad_method='FIXED')
 			ops.object.mode_set(mode='OBJECT')
-
+				
 		duplis = []
-		bpy.ops.object.duplicates_make_real()
-		id.select_set(False)
-		for dupli in bpy.context.selected_objects[:]:
-			dupli.parent = id
-			duplis.append(self.bakeObj(dupli, generate_uvs = False))
-		if duplis:
-			for bake in duplis: bake.object.select_set(True)
-			del duplis
-			bpy.ops.object.join()
-			if should_triangulate: triangulate()
-			duplis = bpy.context.active_object
-		else:
-			duplis = None
+		if id.instance_type != 'NONE':
+			bpy.ops.object.duplicates_make_real()
+			id.select_set(False)
+			if bpy.context.selected_objects:
+				bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
+				bpy.ops.object.join()
+				duplis = bpy.context.active_object
+				duplis.parent = id
+				duplis = self.bakeObj(duplis, generate_uvs = False).object
+				if should_triangulate: triangulate()		
+			elif id.type not in exportable_types:
+				return
+			else:
+				duplis = None
 
 		if id.type != 'META': # eek, what about lib data?
 			id = id.copy()
 			bpy.context.scene.collection.objects.link(id)
 		if id.data:
 			id.data = id.data.copy()
-
+		
 		if bpy.context.active_object:
 			ops.object.mode_set(mode='OBJECT')
 		select_only(id)
-
+				
 		if hasShapes(id):
 			id.active_shape_key_index = 0
 
-		top_parent = self.getTopParent(id)
+		top_parent = self.getTopParent(id) # record this before changing hierarchies!
+		
+		def captureBoneParent(armature, boneName):
+			result.envelope = boneName
+			result.armature = self.bakeObj(armature)
+			select_only(id)
 
-		cur_parent = id
-		while cur_parent:
-			if cur_parent.parent_bone and cur_parent.parent_type == 'BONE':
-				result.envelope = cur_parent.parent_bone
-				result.armature = self.bakeObj(cur_parent.parent)
-				select_only(id)
+			# Objects with bone parents are not updated in sync with depsgraph evaluation (as of Blender 3.0.1). So capture the correct matrix before we start to mess with them.
+			# Furthemore, Blender's bone transforms are inconsistent with object transforms:
+			# - A bone's matrix value is local to the armature, NOT the bone's parent
+			# - Object bone parent matricies are calculated from the head of the bone, NOT the tail (even though the tail defines the bone's location in pose mode!)
+			# - Bones are Y up, NOT Z up like everything else in Blender, and this affects their children's transforms
+			# To avoid this mess, we can use the bone and object world transforms to calculate a sane local matrix
+			result.bone_parent_matrix = armature.pose.bones[boneName].matrix.inverted() @ armature.matrix_world.inverted() @ id.matrix_world
+
+		cur = id
+		while cur:
+			if cur.parent_bone and cur.parent_type == 'BONE' and not result.envelope:
+				captureBoneParent(cur.parent, cur.parent_bone)
+			for con in [con for con in cur.constraints if not con.mute]:
+				if con.type in ['CHILD_OF','COPY_TRANSFORMS'] and con.target and con.target.type == 'ARMATURE' and con.subtarget:
+					if not result.envelope:
+						captureBoneParent(con.target, con.subtarget)
+					else:
+						self.warning(get_id("exporter_err_dupeenv_con",True).format(con.name,cur.name))
+			if result.envelope:
 				break
-			cur_parent = cur_parent.parent
+			cur = cur.parent
+		del cur
 
 		if id.type == 'MESH':
 			ops.object.mode_set(mode='EDIT')
 			ops.mesh.reveal()
-
+			
 			if id.matrix_world.is_negative:
 				ops.mesh.select_all(action='SELECT')
 				ops.mesh.flip_normals()
@@ -747,13 +785,13 @@ class SmdExporter(bpy.types.Operator, Logger):
 			ops.mesh.select_all(action="DESELECT")
 			ops.object.mode_set(mode='OBJECT')
 
-		if self.armature_src: # Prevent pose from affecting bone child transforms
+		if self.armature_src:
 			for posebone in self.armature_src.pose.bones: posebone.matrix_basis.identity()
 
 		ops.object.parent_clear(type='CLEAR_KEEP_TRANSFORM')
 		id.matrix_world = Matrix.Translation(top_parent.location).inverted() @ getUpAxisMat(bpy.context.scene.vs.up_axis).inverted() @ id.matrix_world
 
-		if shouldExportDMX() and bpy.context.scene.vs.model_scale != 1.0:
+		if State.exportFormat == ExportFormat.DMX and bpy.context.scene.vs.model_scale != 1.0:
 			id.matrix_world @= Matrix.Diagonal(Vector.Fill(4, bpy.context.scene.vs.model_scale))
 
 		if id.type == 'ARMATURE':
@@ -774,10 +812,10 @@ class SmdExporter(bpy.types.Operator, Logger):
 							result.shape_keys[shape_key.name] = shape_key
 
 			return result
-
+		
 		if id.type == 'CURVE':
 			id.data.dimensions = '3D'
-
+		
 		for con in [con for con in id.constraints if not con.mute]:
 			con.mute = True
 			if con.type in ['CHILD_OF','COPY_TRANSFORMS'] and con.target.type == 'ARMATURE' and con.subtarget:
@@ -805,14 +843,14 @@ class SmdExporter(bpy.types.Operator, Logger):
 				self.error(get_id("exporter_err_shapes_decimate", True).format(id.name,mod.decimate_type))
 				shapes_invalid = True
 		ops.object.mode_set(mode='OBJECT')
-
+		
 		depsgraph = bpy.context.evaluated_depsgraph_get()
-
+		
 		if id.type in exportable_types:
 			# Bake reference mesh
 			data = bpy.data.meshes.new_from_object(id.evaluated_get(depsgraph), preserve_all_data_layers=True, depsgraph=depsgraph)
-			data.name = id.name + "_baked"
-
+			data.name = id.name + "_baked"			
+		
 			def put_in_object(id, data, quiet=False):
 				if bpy.context.view_layer.objects.active:
 					ops.object.mode_set(mode='OBJECT')
@@ -821,10 +859,11 @@ class SmdExporter(bpy.types.Operator, Logger):
 				ob.matrix_world = id.matrix_world
 
 				bpy.context.scene.collection.objects.link(ob)
-
+		
 				select_only(ob)
 
-				ops.object.transform_apply(scale=True, location=not shouldExportDMX(), rotation=not shouldExportDMX())
+				exporting_smd = State.exportFormat == ExportFormat.SMD
+				ops.object.transform_apply(scale=True, location=exporting_smd, rotation=exporting_smd)
 
 				if hasCurves(id):
 					ops.object.mode_set(mode='EDIT')
@@ -857,12 +896,10 @@ class SmdExporter(bpy.types.Operator, Logger):
 		if not data.polygons:
 			self.error(get_id("exporter_err_nopolys", True).format(result.name))
 			return
-
+		
 		result.matrix = baked.matrix_world
 
 		if id.type == 'MESH':
-			data.use_auto_smooth = id.data.use_auto_smooth
-			data.auto_smooth_angle = id.data.auto_smooth_angle
 
 			for remap in id.vs.vertex_map_remaps:
 				copy = baked.vs.vertex_map_remaps.add()
@@ -876,7 +913,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 		if not shapes_invalid and hasShapes(id):
 			# calculate vert balance
-			if shouldExportDMX():
+			if State.exportFormat == ExportFormat.DMX:
 				if id.data.vs.flex_stereo_mode == 'VGROUP':
 					if id.data.vs.flex_stereo_vg == "":
 						self.warning(get_id("exporter_err_splitvgroup_undefined",True).format(id.name))
@@ -901,7 +938,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 							else: result.balance_vg.add([vert.index], balance, 'REPLACE')
 					result.balance_vg.add(ones, 1, 'REPLACE')
 					result.balance_vg.add(zeroes, 0, 'REPLACE')
-
+			
 			# bake shapes
 			id.show_only_shape_key = True
 			for i, shape in enumerate(id.data.shape_keys.key_blocks):
@@ -924,7 +961,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 				if should_triangulate:
 					bpy.context.view_layer.objects.active = shape_ob
 					triangulate()
-
+				
 				bpy.context.scene.collection.objects.unlink(shape_ob)
 				bpy.data.objects.remove(shape_ob)
 				del shape_ob
@@ -937,15 +974,15 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 		# project a UV map
 		if generate_uvs and not baked.data.uv_layers:
+			ops.object.mode_set(mode='EDIT')
+			ops.mesh.select_all(action='SELECT')
 			if len(result.object.data.vertices) < 2000:
-				ops.object.mode_set(mode='OBJECT')
+				result.object.data.uv_layers.new()
 				ops.uv.smart_project()
 			else:
-				ops.object.mode_set(mode='EDIT')
-				ops.mesh.select_all(action='SELECT')
 				ops.uv.unwrap()
-				ops.object.mode_set(mode='OBJECT')
-
+			ops.object.mode_set(mode='OBJECT')
+				
 		return result
 
 	def openSMD(self,path,name,description):
@@ -956,7 +993,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 		except Exception as err:
 			self.error(get_id("exporter_err_open", True).format(description, err))
 			return None
-
+		
 		f.write("version 1\n")
 		print("-",full_path)
 		return f
@@ -964,11 +1001,11 @@ class SmdExporter(bpy.types.Operator, Logger):
 	def writeSMD(self, id, bake_results, name, filepath, filetype = 'smd'):
 		bench = BenchMarker(1,"SMD")
 		goldsrc = bpy.context.scene.vs.smd_format == "GOLDSOURCE"
-
+		
 		self.smd_file = self.openSMD(filepath,name + "." + filetype,filetype.upper())
 		if self.smd_file == None: return 0
 
-		if getEngineVersion() == 2:
+		if State.compiler > Compiler.STUDIOMDL:
 			self.warning(get_id("exporter_warn_source2smdsupport"))
 
 		# BONES
@@ -981,7 +1018,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 			if self.armature.data.vs.implicit_zero_bone:
 				self.smd_file.write("0 \"{}\" -1\n".format(implicit_bone_name))
 				curID += 1
-
+			
 			# Write to file
 			for bone in self.exportable_bones:
 				parent = bone.parent
@@ -1004,7 +1041,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 
 			num_bones = len(self.armature.data.bones)
 			if filetype == 'smd': print("- Exported",num_bones,"bones")
-
+			
 			max_bones = 128
 			if num_bones > max_bones:
 				self.warning(get_id("exporter_err_bonelimit", True).format(num_bones,max_bones))
@@ -1015,7 +1052,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 			self.smd_file.write("{} \"vcabone_{}\" -1\n".format(curID,vca[0]))
 
 		self.smd_file.write("end\n")
-
+		
 		if filetype == 'smd':
 			# ANIMATION
 			self.smd_file.write("skeleton\n")
@@ -1029,7 +1066,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 					anim_len = animationLength(ad) + 1 # frame 0 is a frame too...
 					if anim_len == 1:
 						self.warning(get_id("exporter_err_noframes",True).format(self.armature_src.name))
-
+					
 					if ad.action and hasattr(ad.action,'fps'):
 						bpy.context.scene.render.fps = ad.action.fps
 						bpy.context.scene.render.fps_base = 1
@@ -1043,35 +1080,36 @@ class SmdExporter(bpy.types.Operator, Logger):
 				for i in range(anim_len):
 					bpy.context.window_manager.progress_update(i / anim_len)
 					self.smd_file.write("time {}\n".format(i))
-
+					
 					if self.armature.data.vs.implicit_zero_bone:
 						self.smd_file.write("0  0 0 0  0 0 0\n")
 
 					if is_anim:
 						bpy.context.scene.frame_set(i)
 
-					for posebone in self.exportable_bones:
+					evaluated_bones = self.getEvaluatedPoseBones()
+					for posebone in evaluated_bones:
 						parent = posebone.parent
-						while parent and not parent in self.exportable_bones:
+						while parent and not parent in evaluated_bones:
 							parent = parent.parent
-
+				
 						# Get the bone's Matrix from the current pose
 						PoseMatrix = posebone.matrix
 						if self.armature.data.vs.legacy_rotation:
-							PoseMatrix @= mat_BlenderToSMD
+							PoseMatrix @= mat_BlenderToSMD 
 						if parent:
 							parentMat = parent.matrix
-							if self.armature.data.vs.legacy_rotation: parentMat @= mat_BlenderToSMD
+							if self.armature.data.vs.legacy_rotation: parentMat @= mat_BlenderToSMD 
 							PoseMatrix = parentMat.inverted() @ PoseMatrix
 						else:
 							PoseMatrix = self.armature.matrix_world @ PoseMatrix
-
+				
 						self.smd_file.write("{}  {}  {}\n".format(self.bone_ids[posebone.name], getSmdVec(PoseMatrix.to_translation()), getSmdVec(PoseMatrix.to_euler())))
 
 				self.smd_file.write("end\n")
 
 				ops.object.mode_set(mode='OBJECT')
-
+				
 				print("- Exported {} frames{}".format(anim_len," (legacy rotation)" if self.armature.data.vs.legacy_rotation else ""))
 
 			# POLYGONS
@@ -1084,91 +1122,89 @@ class SmdExporter(bpy.types.Operator, Logger):
 				ob = bake.object
 				data = ob.data
 
-				data.calc_normals_split()
+				uv_loop = data.uv_layers.active.data
+				uv_tex = data.uv_layers.active.data
 
-				for uv_loop in ob.data.uv_layers:
-					uv_tex = data.uv_layers.active.data
+				weights = self.getWeightmap(bake)
+				
+				ob_weight_str = None
+				if type(bake.envelope) == str and bake.envelope in self.bone_ids:
+					ob_weight_str = (" 1 {} 1" if not goldsrc else "{}").format(self.bone_ids[bake.envelope])
+				elif not weights:
+					ob_weight_str = " 0" if not goldsrc else "0"
+				
+				bad_face_mats = 0
+				multi_weight_verts = set() # only relevant for GoldSrc exports
+				p = 0
+				for poly in data.polygons:
+					if p % 10 == 0: bpy.context.window_manager.progress_update(p / len(data.polygons))
+					mat_name, mat_success = self.GetMaterialName(ob, poly.material_index)
+					if not mat_success:
+						bad_face_mats += 1
+					
+					self.smd_file.write(mat_name + "\n")
+					
+					for loop in [data.loops[l] for l in poly.loop_indices]:
+						# Vertex locations, normal directions
+						v = data.vertices[loop.vertex_index]
+						pos_norm = "  {}  {}  ".format(getSmdVec(v.co),getSmdVec(loop.normal))
 
-					weights = self.getWeightmap(bake)
+						# UVs
+						uv = " ".join([getSmdFloat(j) for j in uv_loop[loop.index].uv])
 
-					ob_weight_str = None
-					if type(bake.envelope) == str and bake.envelope in self.bone_ids:
-						ob_weight_str = (" 1 {} 1" if not goldsrc else "{}").format(self.bone_ids[bake.envelope])
-					elif not weights:
-						ob_weight_str = " 0" if not goldsrc else "0"
-
-					bad_face_mats = 0
-					multi_weight_verts = set() # only relevant for GoldSrc exports
-					p = 0
-					for poly in data.polygons:
-						if p % 10 == 0: bpy.context.window_manager.progress_update(p / len(data.polygons))
-						mat_name, mat_success = self.GetMaterialName(ob, poly)
-						if not mat_success:
-							bad_face_mats += 1
-
-						self.smd_file.write(mat_name + "\n")
-
-						for loop in [data.loops[l] for l in poly.loop_indices]:
-							# Vertex locations, normal directions
-							v = data.vertices[loop.vertex_index]
-							pos_norm = "  {}  {}  ".format(getSmdVec(v.co),getSmdVec(loop.normal))
-
-							# UVs
-							uv = " ".join([getSmdFloat(j) for j in uv_loop[loop.index].uv])
-
-							if not goldsrc:
-								# Weightmaps
-								weight_string = ""
-								if ob_weight_str:
-									weight_string = ob_weight_str
-								else:
-									valid_weights = 0
-									for link in [link for link in weights[v.index] if link[1] > 0]:
-										weight_string += " {} {}".format(link[0], getSmdFloat(link[1]))
-										valid_weights += 1
-									weight_string = " {}{}".format(valid_weights,weight_string)
-
-								self.smd_file.write("0" + pos_norm + uv + weight_string + "\n") # write to file
-
+						if not goldsrc:
+							# Weightmaps
+							weight_string = ""
+							if ob_weight_str:
+								weight_string = ob_weight_str
 							else:
-								if ob_weight_str:
-									weight_string = ob_weight_str
-								else:
-									goldsrc_weights = [link for link in weights[v.index] if link[1] > 0]
-									if len(goldsrc_weights) == 0:
-										weight_string = "0"
-									else:
-										if len(goldsrc_weights) > 1:
-											multi_weight_verts.add(v)
-										weight_string = str(goldsrc_weights[0][0])
-								self.smd_file.write(weight_string + pos_norm + uv + "\n") # write to file
+								valid_weights = 0
+								for link in [link for link in weights[v.index] if link[1] > 0]:
+									weight_string += " {} {}".format(link[0], getSmdFloat(link[1]))
+									valid_weights += 1
+								weight_string = " {}{}".format(valid_weights,weight_string)	
 
-						face_index += 1
+							self.smd_file.write("0" + pos_norm + uv + weight_string + "\n") # write to file
+
+						else:
+							if ob_weight_str:
+								weight_string = ob_weight_str
+							else:
+								goldsrc_weights = [link for link in weights[v.index] if link[1] > 0]
+								if len(goldsrc_weights) == 0:
+									weight_string = "0"
+								else:
+									if len(goldsrc_weights) > 1:
+										multi_weight_verts.add(v)
+									weight_string = str(goldsrc_weights[0][0])
+							self.smd_file.write(weight_string + pos_norm + uv + "\n") # write to file
+
+					face_index += 1
 
 				if goldsrc and multi_weight_verts:
 					self.warning(get_id("exporterr_goldsrc_multiweights", format_string=True).format(len(multi_weight_verts), bake.src.data.name))
 				if bad_face_mats:
 					self.warning(get_id("exporter_err_facesnotex_ormat").format(bad_face_mats,bake.src.data.name))
-
+				
 				print("- Exported",face_index,"polys")
-
+				
 				print("- Exported {} materials".format(len(self.materials_used)))
 				for mat in self.materials_used:
 					print("   " + mat[0])
-
+			
 			if done_header:
 				self.smd_file.write("end\n")
 		elif filetype == 'vta':
 			self.smd_file.write("skeleton\n")
-
+			
 			def _writeTime(time, shape_name = None):
 				self.smd_file.write( "time {}{}\n".format(time, " # {}".format(shape_name) if shape_name else ""))
-
+			
 			shape_names = ordered_set.OrderedSet()
 			for bake in [bake for bake in bake_results if bake.object.type != 'ARMATURE']:
 				for shape_name in bake.shapes.keys():
 					shape_names.add(shape_name)
-
+				
 			_writeTime(0)
 			for i, shape_name in enumerate(shape_names):
 				_writeTime(i+1, shape_name)
@@ -1180,12 +1216,10 @@ class SmdExporter(bpy.types.Operator, Logger):
 			total_verts = 0
 			vert_id = 0
 			shape_id = 1
-
+			
 			def _makeVertLine(i,co,norm):
 				return "{} {} {}\n".format(i, getSmdVec(co), getSmdVec(norm))
-
-			bake.object.data.calc_normals_split()
-
+			
 			_writeTime(0)
 			for bake in [bake for bake in bake_results if bake.object.type != 'ARMATURE']:
 				bake.offset = vert_id
@@ -1193,7 +1227,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 				for loop in [bake.object.data.loops[l] for poly in bake.object.data.polygons for l in poly.loop_indices]:
 					self.smd_file.write(_makeVertLine(vert_id,verts[loop.vertex_index].co,loop.normal))
 					vert_id += 1
-
+			
 			for i, shape_name in enumerate(shape_names):
 				i += 1
 				bpy.context.window_manager.progress_update(i / len(shape_names))
@@ -1201,11 +1235,8 @@ class SmdExporter(bpy.types.Operator, Logger):
 				for bake in [bake for bake in bake_results if bake.object.type != 'ARMATURE']:
 					shape = bake.shapes.get(shape_name)
 					if not shape: continue
-
-					shape.calc_normals_split()
-
+					
 					vert_index = bake.offset
-					num_bad_verts = 0
 					mesh_verts = bake.object.data.vertices
 					shape_verts = shape.vertices
 
@@ -1218,13 +1249,13 @@ class SmdExporter(bpy.types.Operator, Logger):
 							self.smd_file.write(_makeVertLine(vert_index,shape_vert.co,shape_loop.normal))
 							total_verts += 1
 						vert_index += 1
-
+				
 			self.smd_file.write("end\n")
 			print("- Exported {} flex shapes ({} verts)".format(i,total_verts))
 
 		self.smd_file.close()
 
-
+		
 		if bench.quiet:
 			print("- {} export took".format(filetype.upper()) ,bench.total(),"\n")
 
@@ -1242,7 +1273,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 		bench = BenchMarker()
 		self.smd_file = self.openSMD(filepath,name + ".vta","vertex animation")
 		if self.smd_file == None: return 0
-
+			
 		self.smd_file.write(
 '''nodes
 0 "root" -1
@@ -1255,20 +1286,19 @@ skeleton
 		self.smd_file.write("end\nvertexanimation\n")
 		num_frames = len(vca)
 		two_percent = num_frames / 50
-
+		
 		for frame, vca_ob in enumerate(vca):
 			self.smd_file.write("time {}\n".format(frame))
 
-			vca_ob.data.calc_normals_split()
 			self.smd_file.writelines(["{} {} {}\n".format(loop.index, getSmdVec(vca_ob.data.vertices[loop.vertex_index].co), getSmdVec(loop.normal)) for loop in vca_ob.data.loops])
-
+			
 			if two_percent and frame % two_percent == 0:
 				print(".", debug_only=True, newline=False)
 				bpy.context.window_manager.progress_update(frame / num_frames)
 
 			removeObject(vca_ob)
 			vca[frame] = None
-
+		
 		self.smd_file.write("end\n")
 		print(debug_only=True)
 		print("Exported {} frames ({:.1f}MB)".format(num_frames, self.smd_file.tell() / 1024 / 1024))
@@ -1293,7 +1323,7 @@ skeleton
 		)
 
 		max_frame = float(len(vca)-1)
-		for i, frame in enumerate(vca):
+		for i in range(len(vca)):
 			self.smd_file.write("time {}\n".format(i))
 			if self.armature_src:
 				for root_bone in [b for b in self.exportable_bones if b.parent == None]:
@@ -1313,7 +1343,7 @@ skeleton
 		armature_name = self.armature_src.name if self.armature_src else name
 		materials = {}
 		written = 0
-
+		
 		def makeTransform(name,matrix,object_name):
 			trfm = dm.add_element(name,"DmeTransform",id=object_name+"transform")
 			trfm["position"] = datamodel.Vector3(matrix.to_translation())
@@ -1324,8 +1354,8 @@ skeleton
 				trfm["scale"] = (scale_vec.x + scale_vec.y + scale_vec.z) / 3
 
 			return trfm
-
-		dm = datamodel.DataModel("model",DatamodelFormatVersion())
+		
+		dm = datamodel.DataModel("model",State.datamodelFormat)
 		dm.allow_random_ids = False
 
 		source2 = dm.format_ver >= 22
@@ -1333,7 +1363,7 @@ skeleton
 		root = dm.add_element(bpy.context.scene.name,id="Scene"+bpy.context.scene.name)
 		DmeModel = dm.add_element(armature_name,"DmeModel",id="Object" + armature_name)
 		DmeModel_children = DmeModel["children"] = datamodel.make_array([],datamodel.Element)
-
+		
 		DmeModel_transforms = dm.add_element("base","DmeTransformList",id="transforms"+bpy.context.scene.name)
 		DmeModel["baseStates"] = datamodel.make_array([ DmeModel_transforms ],datamodel.Element)
 		DmeModel_transforms["transforms"] = datamodel.make_array([],datamodel.Element)
@@ -1344,11 +1374,11 @@ skeleton
 			DmeAxisSystem["upAxis"] = axes_lookup_source2[bpy.context.scene.vs.up_axis]
 			DmeAxisSystem["forwardParity"] = axes_lookup_source2_signed[bpy.context.scene.vs.forward_parity]
 			DmeAxisSystem["coordSys"] = 0 # ?? - Maybe global vs local coordinates
-
+		
 		DmeModel["transform"] = makeTransform("",Matrix(),DmeModel.name + "transform")
 
 		keywords = getDmxKeywords(dm.format_ver)
-
+				
 		# skeleton
 		root["skeleton"] = DmeModel
 		want_jointlist = dm.format_ver >= 11
@@ -1358,12 +1388,12 @@ skeleton
 			if source2:
 				jointList.append(DmeModel)
 		if want_jointtransforms:
-			jointTransforms = DmeModel["jointTransforms"] = datamodel.make_array([],datamodel.Element)
+			jointTransforms = DmeModel["jointTransforms"] = datamodel.make_array([],datamodel.Element)		
 			if source2:
 				jointTransforms.append(DmeModel["transform"])
 		bone_elements = {}
 		if self.armature: armature_scale = self.armature.matrix_world.to_scale()
-
+		
 		def writeBone(bone):
 			if isinstance(bone,str):
 				bone_name = bone
@@ -1379,7 +1409,7 @@ skeleton
 			bone_elements[bone_name] = bone_elem = dm.add_element(bone_name,"DmeJoint",id=bone_name)
 			if want_jointlist: jointList.append(bone_elem)
 			self.bone_ids[bone_name] = len(bone_elements) - (0 if source2 else 1) # in Source 2, index 0 is the DmeModel
-
+			
 			if not bone: relMat = Matrix()
 			else:
 				cur_p = bone.parent
@@ -1401,17 +1431,17 @@ skeleton
 
 			trfm = makeTransform(bone_name,relMat,"bone"+bone_name)
 			trfm_base = makeTransform(bone_name,relMat,"bone_base"+bone_name)
-
+			
 			if bone and bone.parent:
 				for j in range(3):
 					trfm["position"][j] *= armature_scale[j]
 			trfm_base["position"] = trfm["position"]
-
+			
 			if want_jointtransforms: jointTransforms.append(trfm)
 			bone_elem["transform"] = trfm
-
+			
 			DmeModel_transforms.append(trfm_base)
-
+			
 			if bone:
 				children = bone_elem["children"] = datamodel.make_array([],datamodel.Element)
 				for child_elems in [writeBone(child) for child in bone.children]:
@@ -1419,11 +1449,11 @@ skeleton
 
 				bpy.context.window_manager.progress_update(len(bone_elements)/num_bones)
 			return [bone_elem]
-
+	
 		if self.armature:
 			num_bones = len(self.exportable_bones)
 			add_implicit_bone = not source2
-
+			
 			if add_implicit_bone:
 				DmeModel_children.extend(writeBone(implicit_bone_name))
 			for root_elems in [writeBone(bone) for bone in self.armature.pose.bones if not bone.parent and not (add_implicit_bone and bone.name == implicit_bone_name)]:
@@ -1452,7 +1482,7 @@ skeleton
 						path = os.path.realpath(bpy.path.abspath(self.flex_controller_source))
 						print(msg + path)
 						controller_dm = datamodel.load(path=path,element_path=element_path)
-
+			
 					DmeCombinationOperator = controller_dm.root["combinationOperator"]
 
 					for elem in [elem for elem in DmeCombinationOperator["targets"] if elem.type != "DmeFlexRules"]:
@@ -1474,25 +1504,24 @@ skeleton
 
 		for bake in [bake for bake in bake_results if bake.object.type != 'ARMATURE']:
 			root["model"] = DmeModel
-
+			
 			ob = bake.object
-
+			
 			vertex_data = dm.add_element("bind","DmeVertexData",id=bake.name+"verts")
-
+			
 			DmeMesh = dm.add_element(bake.name,"DmeMesh",id=bake.name+"mesh")
-			DmeMesh["visible"] = True
+			DmeMesh["visible"] = True			
 			DmeMesh["bindState"] = vertex_data
 			DmeMesh["currentState"] = vertex_data
 			DmeMesh["baseStates"] = datamodel.make_array([vertex_data],datamodel.Element)
-
+						
 			DmeDag = dm.add_element(bake.name,"DmeDag",id="ob"+bake.name+"dag")
 			if want_jointlist: jointList.append(DmeDag)
 			DmeDag["shape"] = DmeMesh
-
+			
 			bone_child = isinstance(bake.envelope, str)
 			if bone_child and bake.envelope in bone_elements:
 				bone_elements[bake.envelope]["children"].append(DmeDag)
-
 				# Blender's bone transforms are inconsistent with object transforms:
 				# - A bone's matrix_local value is local to the armature, NOT the bone's parent
 				# - Bone parents are calculated from the head of the bone, NOT the tail (even though the tail defines the bone's location in pose mode!)
@@ -1507,12 +1536,12 @@ skeleton
 				trfm_mat = ob.matrix_world
 
 			trfm = makeTransform(bake.name, trfm_mat, "ob"+bake.name)
-
+						
 			if want_jointtransforms: jointTransforms.append(trfm)
-
+			
 			DmeDag["transform"] = trfm
 			DmeModel_transforms.append(makeTransform(bake.name, trfm_mat, "ob_base"+bake.name))
-
+			
 			jointCount = 0
 			weight_link_limit = 4 if source2 else 3
 			badJointCounts = 0
@@ -1543,16 +1572,14 @@ skeleton
 				if jointCount: have_weightmap = True
 			elif bake.envelope:
 				jointCount = 1
-
+					
 			if badJointCounts:
 				self.warning(get_id("exporter_warn_weightlinks_excess",True).format(badJointCounts,bake.src.name,weight_link_limit))
 			if culled_weight_links:
 				self.warning(get_id("exporter_warn_weightlinks_culled",True).format(culled_weight_links,cull_threshold,bake.src.name))
-
-			format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco'], keywords['texco1']],str)
-			if have_weightmap: format.extend( [ keywords['weight'], keywords["weight_indices"] ] )
-			if bake.shapes and bake.balance_vg:
-				format.append(keywords["balance"])
+						
+			format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco'] ], str)
+			if have_weightmap: format.extend([keywords['weight'], keywords["weight_indices"]])
 
 			if cloth_groups:
 				for vgroup in cloth_groups:
@@ -1561,17 +1588,18 @@ skeleton
 			vertex_data["flipVCoordinates"] = True
 			vertex_data["jointCount"] = jointCount
 
+			
 			num_verts = len(ob.data.vertices)
 			num_loops = len(ob.data.loops)
 			pos = [None] * num_verts
 			norms = [None] * num_loops
 			texco = ordered_set.OrderedSet()
-			texco1 = ordered_set.OrderedSet()
+			face_sets = collections.OrderedDict()
 			texcoIndices = [None] * num_loops
-			texcoIndices1 = [None] * num_loops
 			jointWeights = []
 			jointIndices = []
 			balance = [0.0] * num_verts
+
 			cloth_weights = {}
 
 			if cloth_groups:
@@ -1580,11 +1608,11 @@ skeleton
 
 			Indices = [None] * num_loops
 
-			ob.data.calc_normals_split()
+			uv_layer = ob.data.uv_layers.active.data
+			
+			bench.report("object setup")			
 
-			uv_layer = ob.data.uv_layers
-
-			bench.report("object setup")
+			v=0
 
 			def	remap(input, a, b, c, d):
 				return (((input - a) * (d - c)) / (b - a)) + c
@@ -1592,7 +1620,7 @@ skeleton
 			for vert in ob.data.vertices:
 				pos[vert.index] = datamodel.Vector3(vert.co)
 				vert.select = False
-
+				
 				if bake.shapes and bake.balance_vg:
 					try: balance[vert.index] = bake.balance_vg.weight(vert.index)
 					except: pass
@@ -1627,40 +1655,111 @@ skeleton
 
 					if source2 and total_weight == 0:
 						weights[0] = 1.0 # attach to the DmeModel itself, avoiding motion.
-
+					
 					jointWeights.extend(weights)
 					jointIndices.extend(indices)
-				if len(pos) % 50 == 0:
-					bpy.context.window_manager.progress_update(len(pos) / num_verts)
+					v += 1
+				if v % 50 == 0:
+					bpy.context.window_manager.progress_update(v / num_verts)
 
 			bench.report("verts")
 
-			ob.data.calc_normals_split()
-
 			for loop in [ob.data.loops[i] for poly in ob.data.polygons for i in poly.loop_indices]:
-				texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layer[0].data[loop.index].uv))
-				texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layer[1].data[loop.index].uv))
+				texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layer[loop.index].uv))
 				norms[loop.index] = datamodel.Vector3(loop.normal)
-				Indices[loop.index] = loop.vertex_index
+				Indices[loop.index] = loop.vertex_index					
 
 			bench.report("loops")
 
-			vertex_data[keywords['pos']] = datamodel.make_array(pos,datamodel.Vector3)
-			vertex_data[keywords['pos'] + "Indices"] = datamodel.make_array(Indices,int)
+			bpy.context.view_layer.objects.active = ob
+			bpy.ops.object.mode_set(mode='EDIT')
+			bm = bmesh.from_edit_mesh(ob.data)
+			bm.verts.ensure_lookup_table()
+			bm.faces.ensure_lookup_table()
+
+			vertex_data[keywords['pos']] = datamodel.make_array((v.co for v in bm.verts),datamodel.Vector3)
+			vertex_data[keywords['pos'] + "Indices"] = datamodel.make_array((l.vert.index for f in bm.faces for l in f.loops),int)
 
 			vertex_data[keywords['texco']] = datamodel.make_array(texco,datamodel.Vector2)
 			vertex_data[keywords['texco'] + "Indices"] = datamodel.make_array(texcoIndices,int)
+
+			if source2: # write out arbitrary vertex data
+				loops = [loop for face in bm.faces for loop in face.loops]
+				loop_indices = datamodel.make_array([loop.index for loop in loops], int)
+				layerGroups = bm.loops.layers
+
+				class exportLayer:
+					name : str
+					
+					def __init__(self, layer, exportName = None): 
+						self._layer = layer
+						self.name = exportName or layer.name
+						
+					def data_for(self, loop): return loop[self._layer]
+				
+				def get_bmesh_layers(layerGroup):
+					return [exportLayer(l) for l in layerGroup if re.match(r".*\$[0-9]+", l.name)]
+
+				defaultUvLayer = "texcoord$0"
+				uv_layers_to_export = list(get_bmesh_layers(layerGroups.uv))
+				if not defaultUvLayer in [l.name for l in uv_layers_to_export]: # select a default UV map
+					uv_render_layer = next((l.name for l in ob.data.uv_layers if l.active_render and not l in uv_layers_to_export), None)
+					if uv_render_layer:
+						uv_layers_to_export.append(exportLayer(layerGroups.uv[uv_render_layer], defaultUvLayer))
+						print("- Exporting '{}' as {}".format(uv_render_layer, defaultUvLayer))
+					else:
+						self.warning("'{}' does not contain a UV Map called {} and no suitable fallback map could be found. The model may be missing UV data.".format(bake.name, defaultUvLayer))
+
+				for layer in uv_layers_to_export:
+					uv_set = ordered_set.OrderedSet()
+					uv_indices = []
+					for uv in (layer.data_for(loop).uv for loop in loops):
+						uv_indices.append(uv_set.add(datamodel.Vector2(uv)))
+						
+					vertex_data[layer.name] = datamodel.make_array(uv_set, datamodel.Vector2)
+					vertex_data[layer.name + "Indices"] = datamodel.make_array(uv_indices, int)
+					format.append(layer.name)
+
+				def make_vertex_layer(layer : exportLayer, arrayType):
+					vertex_data[layer.name] = datamodel.make_array([layer.data_for(loop) for loop in loops], arrayType)
+					vertex_data[layer.name + "Indices"] = loop_indices
+					format.append(layer.name)
+
+				for layer in get_bmesh_layers(layerGroups.color):
+					make_vertex_layer(layer, datamodel.Vector4)
+				for layer in get_bmesh_layers(layerGroups.float):
+					make_vertex_layer(layer, float)
+				for layer in get_bmesh_layers(layerGroups.int):
+					make_vertex_layer(layer, int)
+				for layer in get_bmesh_layers(layerGroups.string):
+					make_vertex_layer(layer, str)
+
+				bench.report("Source 2 vertex data")
 			
-			vertex_data[keywords['texco1']] = datamodel.make_array(texco1,datamodel.Vector2)
-			vertex_data[keywords['texco1'] + "Indices"] = datamodel.make_array(texcoIndices1,int)
+			else:
+				format.append("textureCoordinates")
+				vertex_data["textureCoordinates"] = datamodel.make_array(texco,datamodel.Vector2)
+				vertex_data["textureCoordinatesIndices"] = datamodel.make_array(texcoIndices,int)
+								
 			if have_weightmap:
 				vertex_data[keywords["weight"]] = datamodel.make_array(jointWeights,float)
 				vertex_data[keywords["weight_indices"]] = datamodel.make_array(jointIndices,int)
+				format.extend( [ keywords['weight'], keywords["weight_indices"] ] )
 
-			if bake.shapes:
+			deform_layer = bm.verts.layers.deform.active
+			if deform_layer:
+				for cloth_enable in (group for group in ob.vertex_groups if re.match(r"cloth_enable\$[0-9]+", group.name)):
+					format.append(cloth_enable.name)
+					values = [v[deform_layer].get(cloth_enable.index, 0) for v in bm.verts]
+					valueSet = ordered_set.OrderedSet(values)
+					vertex_data[cloth_enable.name] = datamodel.make_array(valueSet, float)
+					vertex_data[cloth_enable.name + "Indices"] = datamodel.make_array((valueSet.index(values[i]) for i in Indices), int)
+			
+			if bake.shapes and bake.balance_vg:
 				vertex_data[keywords["balance"]] = datamodel.make_array(balance,float)
 				vertex_data[keywords["balance"] + "Indices"] = datamodel.make_array(Indices,int)
-
+				format.append(keywords["balance"])
+						
 			vertex_data[keywords['norm']] = datamodel.make_array(norms,datamodel.Vector3)
 			vertex_data[keywords['norm'] + "Indices"] = datamodel.make_array(range(len(norms)),int)
 
@@ -1688,64 +1787,80 @@ skeleton
 				vertex_data[attribute_name + "Indices"] = datamodel.make_array(range(len(colours)),int)
 				format.append(attribute_name)
 
-			face_sets = collections.OrderedDict()
 			bad_face_mats = 0
 			v = 0
 			p = 0
-			num_polys = len(ob.data.polygons)
+			num_polys = len(bm.faces)
 
 			two_percent = int(num_polys / 50)
 			print("Polygons: ",debug_only=True,newline=False)
-			for poly in ob.data.polygons:
-				mat_name, mat_success = self.GetMaterialName(ob, poly)
+
+			bm_face_sets = collections.defaultdict(list)
+			for face in bm.faces:
+				mat_name, mat_success = self.GetMaterialName(ob, face.material_index)
 				if not mat_success:
 					bad_face_mats += 1
-
-				face_set = face_sets.get(mat_name)
-				if face_set:
-					face_list = face_set["faces"]
-				else:
-					material_elem = materials.get(mat_name)
-					if not material_elem:
-						materials[mat_name] = material_elem = dm.add_element(mat_name,"DmeMaterial",id=mat_name + "mat")
-						material_elem["mtlName"] = os.path.join(bpy.context.scene.vs.material_path, mat_name).replace('\\','/')
-
-					face_set = dm.add_element(mat_name,"DmeFaceSet",id=bake.name+mat_name+"faces")
-					face_sets[mat_name] = face_set
-
-					face_set["material"] = material_elem
-					face_list = face_set["faces"] = datamodel.make_array([],int)
-
-				face_list.extend(poly.loop_indices)
-				face_list.append(-1)
-
+				bm_face_sets[mat_name].extend((*(l.index for l in face.loops),-1))
+				
 				p+=1
 				if two_percent and p % two_percent == 0:
 					print(".", debug_only=True, newline=False)
-					bpy.context.window_manager.progress_update(len(face_list) / num_polys)
+					bpy.context.window_manager.progress_update(p / num_polys)
+
+			for (mat_name,indices) in bm_face_sets.items():
+				material_elem = materials.get(mat_name)
+				if not material_elem:
+					materials[mat_name] = material_elem = dm.add_element(mat_name,"DmeMaterial",id=mat_name + "mat")
+					material_elem["mtlName"] = os.path.join(bpy.context.scene.vs.material_path, mat_name).replace('\\','/')
+					
+				face_set = dm.add_element(mat_name,"DmeFaceSet",id=bake.name+mat_name+"faces")
+				face_sets[mat_name] = face_set
+
+				face_set["material"] = material_elem
+				face_set["faces"] = datamodel.make_array(indices,int)
 
 			print(debug_only=True)
 			DmeMesh["faceSets"] = datamodel.make_array(list(face_sets.values()),datamodel.Element)
-
+			
 			if bad_face_mats:
 				self.warning(get_id("exporter_err_facesnotex_ormat").format(bad_face_mats, bake.name))
 			bench.report("polys")
 
+			bpy.ops.object.mode_set(mode='OBJECT')
+			del bm
+
 			two_percent = int(len(bake.shapes) / 50)
 			print("Shapes: ",debug_only=True,newline=False)
 			delta_states = []
+			corrective_shapes_seen = []
 			if bake.shapes:
 				shape_names = []
 				num_shapes = len(bake.shapes)
 				num_correctives = 0
 				num_wrinkles = 0
-
+				
 				for shape_name,shape in bake.shapes.items():
 					shape_names.append(shape_name)
-
 					wrinkle_scale = 0
-					corrective = "_" in shape_name
+					corrective = getCorrectiveShapeSeparator() in shape_name
 					if corrective:
+						# drivers always override shape name to avoid name truncation issues
+						corrective_targets_driver = ordered_set.OrderedSet(flex.getCorrectiveShapeKeyDrivers(bake.src.data.shape_keys.key_blocks[shape_name]) or [])
+						corrective_targets_name = ordered_set.OrderedSet(shape_name.split(getCorrectiveShapeSeparator()))
+						corrective_targets = corrective_targets_driver or corrective_targets_name
+						corrective_targets.source = shape_name
+
+						if(corrective_targets in corrective_shapes_seen):
+							previous_shape = next(x for x in corrective_shapes_seen if x == corrective_targets)
+							self.warning(get_id("exporter_warn_correctiveshape_duplicate", True).format(shape_name, "+".join(corrective_targets), previous_shape.source))
+							continue
+						else:
+							corrective_shapes_seen.append(corrective_targets)
+						
+						if corrective_targets_driver and corrective_targets_driver != corrective_targets_name:
+							generated_shape_name = getCorrectiveShapeSeparator().join(corrective_targets_driver)
+							print("- Renamed shape key '{}' to '{}' to match its corrective shape drivers.".format(shape_name, generated_shape_name))
+							shape_name = generated_shape_name
 						num_correctives += 1
 					else:
 						if self.flex_controller_mode == 'ADVANCED':
@@ -1761,12 +1876,13 @@ skeleton
 							except ValueError:
 								self.warning(get_id("exporter_err_flexctrl_missing", True).format(shape_name))
 							pass
-
+					
+					shape_names.append(shape_name)
 					DmeVertexDeltaData = dm.add_element(shape_name,"DmeVertexDeltaData",id=ob.name+shape_name)
 					delta_states.append(DmeVertexDeltaData)
 
 					vertexFormat = DmeVertexDeltaData["vertexFormat"] = datamodel.make_array([ keywords['pos'], keywords['norm'] ],str)
-
+					
 					wrinkle = []
 					wrinkleIndices = []
 
@@ -1782,7 +1898,7 @@ skeleton
 					if cache_deltas:
 						delta_lengths = [None] * len(ob.data.vertices)
 						max_delta = 0
-
+					
 					for ob_vert in ob.data.vertices:
 						shape_vert = shape.vertices[ob_vert.index]
 
@@ -1798,19 +1914,17 @@ skeleton
 
 					if corrective:
 						corrective_target_shapes = []
-						for corrective_shape_name in shape_name.split("_"):
+						for corrective_shape_name in corrective_targets:
 							corrective_target = bake.shapes.get(corrective_shape_name)
 							if corrective_target:
 								corrective_target_shapes.append(corrective_target)
 							else:
-							   self.warning(get_id("exporter_err_missing_corrective_target", format_string=True).format(shape_name, corrective_shape_name))
-							   continue
+								self.warning(get_id("exporter_err_missing_corrective_target", format_string=True).format(shape_name, corrective_shape_name))
+								continue
 
 							# We need the absolute normals as generated by Blender
 							for shape_vert in shape.vertices:
 								shape_vert.co -= ob.data.vertices[shape_vert.index].co - corrective_target.vertices[shape_vert.index].co
-
-					shape.calc_normals_split()
 
 					for ob_loop in ob.data.loops:
 						shape_loop = shape.loops[ob_loop.index]
@@ -1853,13 +1967,13 @@ skeleton
 						num_wrinkles += 1
 						DmeVertexDeltaData[keywords["wrinkle"]] = datamodel.make_array(wrinkle,float)
 						DmeVertexDeltaData[keywords["wrinkle"] + "Indices"] = datamodel.make_array(wrinkleIndices,int)
-
+										
 					bpy.context.window_manager.progress_update(len(shape_names) / num_shapes)
 					if two_percent and len(shape_names) % two_percent == 0:
 						print(".",debug_only=True,newline=False)
 
 				if bpy.app.debug_value <= 1:
-					for shape in bake.shapes.values():
+					for shape in bake.shapes.values():					
 						bpy.data.meshes.remove(shape)
 						del shape
 					bake.shapes.clear()
@@ -1867,8 +1981,7 @@ skeleton
 				print(debug_only=True)
 				bench.report("shapes")
 				print("- {} flexes ({} with wrinklemaps) + {} correctives".format(num_shapes - num_correctives,num_wrinkles,num_correctives))
-
-			ob.data.calc_normals_split()
+			
 			vca_matrix = ob.matrix_world.inverted()
 			for vca_name,vca in bake_results[0].vertex_animations.items():
 				frame_shapes = []
@@ -1884,8 +1997,6 @@ skeleton
 					shape_norms = []
 					shape_normIndices = []
 
-					vca_ob.data.calc_normals_split()
-
 					for shape_loop in vca_ob.data.loops:
 						shape_vert = vca_ob.data.vertices[shape_loop.vertex_index]
 						ob_loop = ob.data.loops[shape_loop.index]
@@ -1897,7 +2008,7 @@ skeleton
 							if abs(delta.length) > 1e-5:
 								shape_pos.append(datamodel.Vector3(delta))
 								shape_posIndices.append(ob_vert.index)
-
+						
 						norm = Vector(shape_loop.normal)
 						norm.rotate(vca_matrix)
 						if abs(1.0 - norm.dot(ob_loop.normal)) > epsilon[0]:
@@ -1921,7 +2032,7 @@ skeleton
 					vca_bone_name = "vcabone_" + vca_name
 					vca_bone = vca_arm.data.edit_bones.new(vca_bone_name)
 					vca_bone.tail.y = 1
-
+					
 					bpy.context.scene.frame_set(0)
 					mat = getUpAxisMat('y').inverted()
 					# DMX animations don't handle missing root bones or meshes, so create bones to represent them
@@ -1969,22 +2080,22 @@ skeleton
 
 		if len(bake_results) == 1 and bake_results[0].object.type == 'ARMATURE': # animation
 			ad = self.armature.animation_data
-
-			anim_len = animationLength(ad)
+						
+			anim_len = animationLength(ad) if ad else 0
 			if anim_len == 0:
 				self.warning(get_id("exporter_err_noframes",True).format(self.armature_src.name))
-
+			
 			if ad.action and hasattr(ad.action,'fps'):
 				fps = bpy.context.scene.render.fps = ad.action.fps
 				bpy.context.scene.render.fps_base = 1
 			else:
 				fps = bpy.context.scene.render.fps * bpy.context.scene.render.fps_base
-
-			DmeChannelsClip = dm.add_element(name,"DmeChannelsClip",id=name+"clip")
+			
+			DmeChannelsClip = dm.add_element(name,"DmeChannelsClip",id=name+"clip")		
 			DmeAnimationList = dm.add_element(armature_name,"DmeAnimationList",id=armature_name+"list")
 			DmeAnimationList["animations"] = datamodel.make_array([DmeChannelsClip],datamodel.Element)
 			root["animationList"] = DmeAnimationList
-
+			
 			DmeTimeFrame = dm.add_element("timeframe","DmeTimeFrame",id=name+"time")
 			duration = anim_len / fps
 			if dm.format_ver >= 11:
@@ -1994,12 +2105,12 @@ skeleton
 			DmeTimeFrame["scale"] = 1.0
 			DmeChannelsClip["timeFrame"] = DmeTimeFrame
 			DmeChannelsClip["frameRate"] = fps if source2 else int(fps)
-
+			
 			channels = DmeChannelsClip["channels"] = datamodel.make_array([],datamodel.Element)
 			bone_channels = {}
 			flex_channels = {}
 			def makeChannel(bone):
-				bone_channels[bone] = []
+				bone_channels[bone.name] = []
 				channel_template = [
 					[ "_p", "position", "Vector3", datamodel.Vector3 ],
 					[ "_o", "orientation", "Quaternion", datamodel.Quaternion ]
@@ -2012,18 +2123,18 @@ skeleton
 					cur = dm.add_element(bone.name + template[0],"DmeChannel",id=bone.name+template[0])
 					cur["toAttribute"] = template[1]
 					cur["toElement"] = (bone_elements[bone.name] if bone else DmeModel)["transform"]
-					cur["mode"] = 1
-					val_arr = dm.add_element(template[2]+" log","Dme"+template[2]+"LogLayer",cur.name+"loglayer")
+					cur["mode"] = 1				
+					val_arr = dm.add_element(template[2]+" log","Dme"+template[2]+"LogLayer",cur.name+"loglayer")				
 					cur["log"] = dm.add_element(template[2]+" log","Dme"+template[2]+"Log",cur.name+"log")
-					cur["log"]["layers"] = datamodel.make_array([val_arr],datamodel.Element)
+					cur["log"]["layers"] = datamodel.make_array([val_arr],datamodel.Element)				
 					val_arr["times"] = datamodel.make_array([],datamodel.Time if dm.format_ver > 11 else int)
 					val_arr["values"] = datamodel.make_array([],template[3])
 					if template[1] == "scale":
 						cur["toIndex"] = 0
 						cur["fromIndex"] = 0
-					if bone: bone_channels[bone].append(val_arr)
+					if bone: bone_channels[bone.name].append(val_arr)
 					channels.append(cur)
-
+			
 			for bone in self.exportable_bones:
 				makeChannel(bone)
 
@@ -2047,6 +2158,7 @@ skeleton
 				for shape_name in bake_results[0].shape_keys:
 					makeFlexChannel(shape_name)
 
+
 			num_frames = int(anim_len + 1)
 			bench.report("Animation setup")
 			prev_pos = {}
@@ -2067,18 +2179,19 @@ skeleton
 				bpy.context.window_manager.progress_update(frame/num_frames)
 				bpy.context.scene.frame_set(frame)
 				keyframe_time = datamodel.Time(frame / fps) if dm.format_ver > 11 else int(frame/fps * 10000)
-				for bone in self.exportable_bones:
-					channel = bone_channels[bone]
+				evaluated_bones = self.getEvaluatedPoseBones()
+				for bone in evaluated_bones:
+					channel = bone_channels[bone.name]
 
 					cur_p = bone.parent
-					while cur_p and not cur_p in self.exportable_bones: cur_p = cur_p.parent
+					while cur_p and not cur_p in evaluated_bones: cur_p = cur_p.parent
 					if cur_p:
 						pMat = cur_p.matrix
 
 						if bpy.context.scene.vs.bone_swap_forward_axis:
 							pMat = pMat @ Matrix.Rotation(radians(90.0), 4, 'Z')
 
-						relMat = pMat.inverted_safe() @ bone.matrix
+						relMat = pMat.inverted() @ bone.matrix
 					else:
 						relMat = self.armature.matrix_world @ bone.matrix
 
@@ -2089,7 +2202,7 @@ skeleton
 					pos = relMat.to_translation()
 					if bone.parent:
 						for j in range(3): pos[j] *= armature_scale[j]
-
+					
 					rot = relMat.to_quaternion()
 					rot_vec = Vector(rot.to_euler())
 
@@ -2108,7 +2221,7 @@ skeleton
 					else:
 						skipped_pos[bone] = keyframe_time
 
-
+					
 					if not prev_rot.get(bone) or rot_vec - prev_rot[bone] > epsilon:
 						skip_time = skipped_rot.get(bone)
 						if skip_time != None:
@@ -2120,7 +2233,6 @@ skeleton
 						channel[1]["values"].append(getDatamodelQuat(rot))
 					else:
 						skipped_rot[bone] = keyframe_time
-
 
 					if make_scale:
 						if not prev_scale.get(bone) or scale_vec - prev_scale[bone] > epsilon:
@@ -2135,8 +2247,6 @@ skeleton
 							channel[2]["values"].append(scale)
 						else:
 							skipped_scale[bone] = keyframe_time
-
-
 					prev_pos[bone] = pos
 					prev_rot[bone] = rot_vec
 					if make_scale: prev_scale[bone] = scale_vec
@@ -2151,14 +2261,14 @@ skeleton
 				if two_percent and frame % two_percent:
 					print(".",debug_only=True,newline=False)
 			print(debug_only=True)
-
+		
 		bpy.context.window_manager.progress_update(0.99)
 		print("- Writing DMX...")
 		try:
 			if bpy.context.scene.vs.use_kv2:
 				dm.write(filepath,"keyvalues2",1)
 			else:
-				dm.write(filepath,"binary",DatamodelEncodingVersion())
+				dm.write(filepath,"binary",State.datamodelEncoding)
 			written += 1
 		except (PermissionError, FileNotFoundError) as err:
 			self.error(get_id("exporter_err_open", True).format("DMX",err))
@@ -2166,5 +2276,5 @@ skeleton
 		bench.report("write")
 		if bench.quiet:
 			print("- DMX export took",bench.total(),"\n")
-
+		
 		return written

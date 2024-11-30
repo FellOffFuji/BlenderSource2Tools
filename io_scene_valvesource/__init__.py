@@ -1,4 +1,4 @@
-﻿#  Copyright (c) 2014 Tom Edwards contact@steamreview.org
+#  Copyright (c) 2014 Tom Edwards contact@steamreview.org
 #
 # ##### BEGIN GPL LICENSE BLOCK #####
 #
@@ -20,38 +20,31 @@
 
 bl_info = {
 	"name": "Blender Source Tools",
-	"author": "Tom Edwards (translators: Grigory Revzin), Sebastian 'Moonded' Danielzik (Fixing Rectus BlenderSourceTools for 2.93)",
-	"version": (3, 1, 4),
-	"blender": (2, 93, 0),
+	"author": "Tom Edwards (translators: Grigory Revzin), FellOffFuji (4.1 version of MoonDed/Kaa992's Source 2 Tools)",
+	"version": (3, 3, 1),
+	"blender": (4, 1, 0),
 	"category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
 	"wiki_url": "http://steamcommunity.com/groups/BlenderSourceTools",
 	"tracker_url": "http://steamcommunity.com/groups/BlenderSourceTools/discussions/0/",
-	"description": "Updated to Blender 3.6!"
+	"description": "Importer and exporter for Valve Software's Source Engine. Supports SMD\VTA, DMX and QC."
 }
 
 import bpy, os
-from bpy import ops
-from bpy.props import *
-
-# get rid of the old module
-for script_path in bpy.utils.script_paths():
-	for file_path in [ os.path.join("modules","datamodel.py"), os.path.join("addons","io_smd_tools.py") ]:
-		try: os.remove(os.path.abspath(os.path.join(script_path,file_path)))
-		except: pass
+from bpy.props import StringProperty, BoolProperty, EnumProperty, IntProperty, CollectionProperty, FloatProperty, PointerProperty
 
 # Python doesn't reload package sub-modules at the same time as __init__.py!
-import imp, sys
+import importlib, sys
 for filename in [ f for f in os.listdir(os.path.dirname(os.path.realpath(__file__))) if f.endswith(".py") ]:
 	if filename == os.path.basename(__file__): continue
-	mod = sys.modules.get("{}.{}".format(__name__,filename[:-3]))
-	if mod: imp.reload(mod)
+	module = sys.modules.get("{}.{}".format(__name__,filename[:-3]))
+	if module: importlib.reload(module)
 
 # clear out any scene update funcs hanging around, e.g. after a script reload
-from bpy.app.handlers import depsgraph_update_pre, depsgraph_update_post
-for func in depsgraph_update_post:
-	if func.__module__.startswith(__name__):
-		depsgraph_update_post.remove(func)
+for collection in [bpy.app.handlers.depsgraph_update_post, bpy.app.handlers.load_post]:
+	for func in collection:
+		if func.__module__.startswith(__name__):
+			collection.remove(func)
 
 from . import datamodel, import_smd, export_smd, flex, GUI, update
 from .utils import *
@@ -59,18 +52,14 @@ from .utils import *
 class ValveSource_Exportable(bpy.types.PropertyGroup):
 	ob_type : StringProperty()
 	icon : StringProperty()
-	item_name : StringProperty()
+	obj : PointerProperty(type=bpy.types.Object)
+	collection : PointerProperty(type=bpy.types.Collection)
 
-	def get_id(self):
-		try:
-			if self.ob_type == 'COLLECTION':
-				return bpy.data.collections[self.item_name]
-			if self.ob_type in ['ACTION', 'OBJECT']:
-				return bpy.data.objects[self.item_name]
-			else:
-				raise TypeError("Unknown object type \"{}\" in ValveSource_Exportable".format(self.ob_type))
-		except KeyError:
-			bpy.context.scene.update_tag()
+	@property
+	def item(self): return self.obj or self.collection
+
+	@property
+	def session_uid(self): return self.item.session_uid
 
 def menu_func_import(self, context):
 	self.layout.operator(import_smd.SmdImporter.bl_idname, text=get_id("import_menuitem", True))
@@ -84,96 +73,43 @@ def menu_func_shapekeys(self,context):
 def menu_func_textedit(self,context):
 	self.layout.operator(flex.InsertUUID.bl_idname)
 
-@bpy.app.handlers.persistent
-def scene_load_post(_):
-	def convert(id,*prop_groups):
-		prop_map = { "export_path":"path", "engine_path":"studiomdl_custom_path", "export_format":"format" }
-
-		for p_g in prop_groups:
-			for prop in [prop for prop in p_g.__dict__.keys() if prop[0] != '_']:
-				val = id.get("smd_" + (prop_map[prop] if prop in prop_map else prop))
-				if val != None:
-					id.vs[prop] = val
-
-		for prop in id.keys():
-			if prop.startswith("smd_"):
-				del id[prop]
-
-	for s in bpy.data.scenes:
-		if hasattr(s,"vs"):
-			convert(s,ValveSource_SceneProps)
-			game_path_changed(s,bpy.context)
-			engine_path_changed(s,bpy.context)
-	for ob in bpy.data.objects: convert(ob,ValveSource_ObjectProps, ExportableProps)
-	for a in bpy.data.armatures: convert(a,ValveSource_ArmatureProps)
-	for g in bpy.data.collections: convert(g,ValveSource_CollectionProps, ExportableProps)
-	for c in bpy.data.curves: convert(c,ValveSource_CurveProps, ShapeTypeProps)
-	for m in bpy.data.meshes:
-		convert(m,ValveSource_MeshProps, ShapeTypeProps)
-		for vert_map in m.vertex_colors:
-			if vert_map.name == "ValveSource_VertexPaintTintColor":
-				vert_map.name = "valvesource_vertex_paint"
-			elif vert_map.name == "ValveSource_VertexPaintBlendParams":
-				vert_map.name = "valvesource_vertex_blend"
-			elif vert_map.name == "ValveSource_VertexPaintBlendParams.001":
-				vert_map.name = "valvesource_vertex_blend1"
-
-
-	if scene_load_post in depsgraph_update_post:
-		depsgraph_update_post.remove(scene_load_post)
-
 def export_active_changed(self, context):
 	if not context.scene.vs.export_list_active < len(context.scene.vs.export_list):
 		context.scene.vs.export_list_active = len(context.scene.vs.export_list) - 1
 		return
 
-	id = get_active_exportable(context).get_id()
-
-	if type(id) == bpy.types.Collection and id.vs.mute: return
+	item = get_active_exportable(context).item
+	
+	if type(item) == bpy.types.Collection and item.vs.mute: return
 	for ob in context.scene.objects: ob.select_set(False)
-
-	if type(id) == bpy.types.Collection:
-		context.view_layer.objects.active = id.objects[0]
-		for ob in id.objects: ob.select_set(True)
+	
+	if type(item) == bpy.types.Collection:
+		context.view_layer.objects.active = item.objects[0]
+		for ob in item.objects: ob.select_set(True)
 	else:
-		id.select_set(True)
-		context.view_layer.objects.active = id
-
-def engine_path_changed(self, context):
-	if bpy.context.scene.vs.engine_path:
-		for compiler in ["studiomdl.exe", "resourcecompiler.exe"]:
-			if os.path.exists(os.path.join(bpy.path.abspath(bpy.context.scene.vs.engine_path),compiler)):
-				p_cache.enginepath_valid = True
-				return
-	p_cache.enginepath_valid = False
-
-def game_path_changed(self,context):
-	game_path = getGamePath()
-	if game_path:
-		for anchor in ["gameinfo.txt", "addoninfo.txt", "gameinfo.gi"]:
-			if os.path.exists(os.path.join(game_path,anchor)):
-				p_cache.gamepath_valid = True
-				return
-	p_cache.gamepath_valid = False
+		item.select_set(True)
+		context.view_layer.objects.active = item
 #
 # Property Groups
 #
 from bpy.types import PropertyGroup
 
 encodings = []
-for enc in datamodel.list_support()['binary']: encodings.append( (str(enc), 'Binary ' + str(enc), '' ) )
+for enc in datamodel.list_support()['binary']: encodings.append( (str(enc), f"Binary {enc}", '' ) )
 formats = []
-for fmt in dmx_model_versions: formats.append( (str(fmt), "Model " + str(fmt), '') )
+for version in set(x for x in [*dmx_versions_source1.values(), *dmx_versions_source2.values()] if x.format != 0):
+	formats.append((version.format_enum, version.format_title, ''))
+formats.sort(key = lambda f: f[0])
 
 class ValveSource_SceneProps(PropertyGroup):
 	export_path : StringProperty(name=get_id("exportroot"),description=get_id("exportroot_tip"), subtype='DIR_PATH')
 	qc_compile : BoolProperty(name=get_id("qc_compileall"),description=get_id("qc_compileall_tip"),default=False)
 	qc_path : StringProperty(name=get_id("qc_path"),description=get_id("qc_path_tip"),default="//*.qc",subtype="FILE_PATH")
-	engine_path : StringProperty(name=get_id("engine_path"),description=get_id("engine_path_tip"), subtype="DIR_PATH",update=engine_path_changed)
-
+	engine_path : StringProperty(name=get_id("engine_path"),description=get_id("engine_path_tip"), subtype='DIR_PATH',update=State.onEnginePathChanged)
+	
 	dmx_encoding : EnumProperty(name=get_id("dmx_encoding"),description=get_id("dmx_encoding_tip"),items=tuple(encodings),default='2')
 	dmx_format : EnumProperty(name=get_id("dmx_format"),description=get_id("dmx_format_tip"),items=tuple(formats),default='1')
-
+	
 	export_format : EnumProperty(name=get_id("export_format"),items=( ('SMD', "SMD", "Studiomdl Data" ), ('DMX', "DMX", "Datamodel Exchange" ) ),default='DMX')
 	up_axis : EnumProperty(name=get_id("up_axis"),items=axes,default='Z',description=get_id("up_axis_tip"))
 	forward_parity : EnumProperty(name=get_id("forward_parity"),items=axes_signed,default='+X',description=get_id("forward_parity_tip"))
@@ -185,9 +121,8 @@ class ValveSource_SceneProps(PropertyGroup):
 	export_list_active : IntProperty(name=get_id("active_exportable"),default=0,min=0,update=export_active_changed)
 	export_list : CollectionProperty(type=ValveSource_Exportable,options={'SKIP_SAVE','HIDDEN'})
 	use_kv2 : BoolProperty(name="Write KeyValues2",description="Write ASCII DMX files",default=False)
-	game_path : StringProperty(name=get_id("game_path"),description=get_id("game_path_tip"),subtype="DIR_PATH",update=game_path_changed)
+	game_path : StringProperty(name=get_id("game_path"),description=get_id("game_path_tip"),subtype='DIR_PATH',update=State.onGamePathChanged)
 	dmx_weightlink_threshold : FloatProperty(name=get_id("dmx_weightlinkcull"),description=get_id("dmx_weightlinkcull_tip"),max=1,min=0)
-	#smd_format : EnumProperty(name="Target Engine", items=(('SOURCE', "Source", "Source Engine (Half-Life 2)") , ("GOLDSOURCE", "GoldSrc", "GoldSrc engine (Half-Life 1)")), default="SOURCE")
 	smd_format : EnumProperty(name=get_id("smd_format"), items=(('SOURCE', "Source", "Source Engine (Half-Life 2)") , ("GOLDSOURCE", "GoldSrc", "GoldSrc engine (Half-Life 1)")), default="SOURCE")
 
 class ValveSource_VertexAnimation(PropertyGroup):
@@ -218,7 +153,7 @@ class VertexMapRemap(PropertyGroup):
 class ValveSource_ObjectProps(ExportableProps,PropertyGroup):
 	action_filter : StringProperty(name=get_id("action_filter"),description=get_id("action_filter_tip"))
 	triangulate : BoolProperty(name=get_id("triangulate"),description=get_id("triangulate_tip"),default=False)
-	vertex_map_remaps :  CollectionProperty(name="Vertes map remaps",type=VertexMapRemap)
+	vertex_map_remaps :  CollectionProperty(name="Vertex map remaps",type=VertexMapRemap)
 
 class ValveSource_ArmatureProps(PropertyGroup):
 	implicit_zero_bone : BoolProperty(name=get_id("dummy_bone"),default=True,description=get_id("dummy_bone_tip"))
@@ -279,37 +214,44 @@ _classes = (
 	GUI.SMD_OT_GenerateVertexAnimationQCSnippet,
 	GUI.SMD_OT_LaunchHLMV,
 	GUI.SMD_PT_Object_Config,
+	GUI.SMD_PT_Group,
+	GUI.SMD_PT_VertexAnimation,
+	GUI.SMD_PT_Armature,
+	GUI.SMD_PT_ShapeKeys,
+	GUI.SMD_PT_VertexMaps,
+	GUI.SMD_PT_Curves,
+	GUI.SMD_PT_FloatMaps,
+	GUI.SMD_OT_AddVertexMapRemap,
 	GUI.SMD_PT_Scene_QC_Complie,
 	flex.DmxWriteFlexControllers,
 	flex.AddCorrectiveShapeDrivers,
+	flex.RenameShapesToMatchCorrectiveDrivers,
 	flex.ActiveDependencyShapes,
+	flex.InsertUUID,
 	update.SmdToolsUpdate,
-	export_smd.SMD_OT_Compile,
-	export_smd.SmdExporter,
+	update.SMD_MT_Updated,
+	export_smd.SMD_OT_Compile, 
+	export_smd.SmdExporter, 
 	import_smd.SmdImporter)
 
 def register():
-	from bpy.utils import register_class
 	for cls in _classes:
-		register_class(cls)
-
+		bpy.utils.register_class(cls)
+	
 	from . import translations
 	bpy.app.translations.register(__name__,translations.translations)
-
+	
 	bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 	bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 	bpy.types.MESH_MT_shape_key_context_menu.append(menu_func_shapekeys)
 	bpy.types.TEXT_MT_edit.append(menu_func_textedit)
-	hook_scene_update()
-	bpy.app.handlers.load_post.append(scene_load_post)
-	depsgraph_update_post.append(scene_load_post) # handles enabling the add-on after the scene is loaded
-
+		
 	try: bpy.ops.wm.addon_disable('EXEC_SCREEN',module="io_smd_tools")
 	except: pass
-
+	
 	def make_pointer(prop_type):
 		return PointerProperty(name=get_id("settings_prop"),type=prop_type)
-
+		
 	bpy.types.Scene.vs = make_pointer(ValveSource_SceneProps)
 	bpy.types.Object.vs = make_pointer(ValveSource_ObjectProps)
 	bpy.types.Armature.vs = make_pointer(ValveSource_ArmatureProps)
@@ -319,9 +261,10 @@ def register():
 	bpy.types.Curve.vs = make_pointer(ValveSource_CurveProps)
 	bpy.types.Text.vs = make_pointer(ValveSource_TextProps)
 
+	State.hook_events()
+
 def unregister():
-	unhook_scene_update()
-	bpy.app.handlers.load_post.remove(scene_load_post)
+	State.unhook_events()
 
 	bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
 	bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
@@ -329,10 +272,9 @@ def unregister():
 	bpy.types.TEXT_MT_edit.remove(menu_func_textedit)
 
 	bpy.app.translations.unregister(__name__)
-
-	from bpy.utils import unregister_class
+	
 	for cls in reversed(_classes):
-		unregister_class(cls)
+		bpy.utils.unregister_class(cls)
 
 	del bpy.types.Scene.vs
 	del bpy.types.Object.vs

@@ -44,7 +44,7 @@ def check_support(encoding,encoding_ver):
 		raise ValueError("Version {} of {} DMX is not supported".format(encoding_ver,encoding))
 
 def _encode_binary_string(string):
-	return bytes(string,'utf-8') + bytes(1)
+	return (bytes(string,'utf-8') + bytes(1)) if string else bytes(1)
 
 
 global _kv2_indent
@@ -76,8 +76,8 @@ def get_char(file):
 	return unpack("c",c)[0].decode('ASCII')
 def get_int(file):
 	return int( unpack("i",file.read(intsize))[0] )
-def get_short(file):
-	return int( unpack("H",file.read(shortsize))[0] )
+def get_short(file, signed = False):
+	return int( unpack("h" if signed else "H",file.read(shortsize))[0] )
 def get_float(file):
 	return float( unpack("f",file.read(floatsize))[0] )
 def get_vec(file,dim):
@@ -91,7 +91,7 @@ def get_str(file):
 		b = file.read(1)
 		if b == b'\x00': break
 		out += b
-	return out.decode()
+	return out.decode() if len(out) else None
 
 def _get_kv2_repr(var):
 	t = type(var)
@@ -153,15 +153,16 @@ class _StrArray(_Array):
 	type = str
 
 class _Vector(list):
+	type = float
 	type_str = ""
 	def __init__(self,l):
 		if len(l) != len(self.type_str):
 			raise TypeError("Expected {} values".format(len(self.type_str)))
-		l = _validate_array_list(l,float)
+		l = _validate_array_list(l,self.type)
 		super().__init__(l)
 		
 	def __repr__(self):
-		return " ".join([str(ord) for ord in self])
+		return " ".join([str(self.type(ord)) for ord in self])
 
 	def __hash__(self):
 		return hash(tuple(self))
@@ -203,8 +204,11 @@ class Matrix(list):
 	type = list
 	def __init__(self,matrix=None):
 		if matrix:
-			attr_error = AttributeError("Matrix must contain 4 lists of 4 floats")
-			if len(matrix) != 4: raise attr_error
+			attr_error = ValueError("Matrix is row-major and must be initialised with 4 lists of 4 floats, or a single list of 16 floats")
+			if len(matrix) == 16:
+				matrix = [matrix[i:i + 4] for i in range(0, len(matrix), 4)]
+			elif len(matrix) != 4: raise attr_error
+
 			for row in matrix:
 				if len(row) != 4: raise attr_error
 				for i in range(4):
@@ -231,20 +235,21 @@ class _BinaryArray(_Array):
 	type = Binary
 	type_str = "b"
 
-class Color(Vector4):
+class Color(_Vector):
 	type = int
-	type_str = "iiii"
-	def tobytes(self):
-		out = bytes()
-		for i in self:
-			out += bytes(int(self[i]))
-		return out
-class _ColorArray(_Vector4Array):
-	pass
+	type_str = "BBBB"
+
+	def __init__(self, l):
+		if any(b < 0 or b > 255 for b in l):
+			raise TypeError("Color channel values must be between 0 and 255")
+		super().__init__(l)
+
+class _ColorArray(_VectorArray):
+	type=Color
 	
 class Time(float):
 	@classmethod
-	def from_int(self,int_value):
+	def from_int(cls,int_value):
 		return Time(int_value / 10000)
 		
 	def tobytes(self):
@@ -275,7 +280,7 @@ class Element(collections.OrderedDict):
 	@property
 	def name(self): return self._name
 	@name.setter
-	def name(self,value): self._name = str(value)
+	def name(self,value): self._name = str(value) if value else None
 
 	@property
 	def type(self): return self._type
@@ -401,7 +406,7 @@ class Element(collections.OrderedDict):
 		out += _kv2_indent + "}"
 		return out
 
-	def tobytes(self,dm):
+	def tobytes(self):
 		if self._is_placeholder:
 			if self.encoding_ver < 5:
 				return b'-1'
@@ -491,8 +496,8 @@ class _StringDictionary(list):
 			return
 		
 		if in_file:
-			num_strings = get_short(in_file) if self.length_size == shortsize else get_int(in_file)
-			for i in range(num_strings):
+			num_strings = get_short(in_file, signed = True) if self.length_size == shortsize else get_int(in_file)
+			for _ in range(num_strings):
 				self.append(get_str(in_file))
 		
 		elif out_datamodel:
@@ -500,7 +505,7 @@ class _StringDictionary(list):
 			string_set = set()
 			def process_element(elem):
 				checked.add(elem)
-				string_set.add(elem.name)
+				if elem.name : string_set.add(elem.name)
 				string_set.add(elem.type)
 				for name in elem:
 					attr = elem[name]
@@ -519,18 +524,19 @@ class _StringDictionary(list):
 		if self.dummy:
 			return get_str(in_file)
 		else:
-			return self[get_short(in_file) if self.indice_size  == shortsize else get_int(in_file)]
+			index = get_short(in_file, signed = True) if self.indice_size  == shortsize else get_int(in_file)
+			return self[index] if index >= 0 else None
 			
 	def write_string(self,out_file,string):
 		if self.dummy:
 			out_file.write( _encode_binary_string(string) )
 		else:
-			assert(string in self)
-			out_file.write( struct.pack("H" if self.indice_size == shortsize else "i", self.index(string) ) )
+			assert(string is None or string in self)
+			out_file.write( struct.pack("h" if self.indice_size == shortsize else "i", self.index(string) if string else -1 ) )
 		
 	def write_dictionary(self,out_file):
 		if not self.dummy:
-			out_file.write( struct.pack("H" if self.length_size == shortsize else "i", len(self) ) )
+			out_file.write( struct.pack("h" if self.length_size == shortsize else "i", len(self) ) )
 			for string in self:
 				out_file.write( _encode_binary_string(string) )
 	
@@ -601,11 +607,21 @@ class DataModel:
 			if elem.type == elemtype: out.append(elem)
 		if len(out): return out
 		
-	def _write(self,value, elem = None, suppress_dict = None):
-		t = type(value)
-		is_array = issubclass(t, _Array)
+	def _writeString(self, value, suppress_dict = None):
 		if suppress_dict == None:
 			suppress_dict = self.encoding_ver < 4
+
+		if type(value) == str or value is None:
+			value = [value]
+
+		if suppress_dict:
+			self.out.write(bytes.join(b'',[_encode_binary_string(item) for item in value]))
+		else:
+			self._string_dict.write_string(self.out,value[0])
+
+	def _write(self,value):
+		t = type(value)
+		is_array = issubclass(t, _Array)
 
 		if is_array:
 			t = value.type
@@ -622,13 +638,9 @@ class DataModel:
 		elif t == uuid.UUID:
 			self.out.write(b''.join([id.bytes_le for id in value]))
 		elif t == str:
-			if is_array or suppress_dict:
-				self.out.write(bytes.join(b'',[_encode_binary_string(item) for item in value]))
-			else:
-				self._string_dict.write_string(self.out,value[0])
-
+			self._writeString(value, is_array)
 		elif t == Element:
-			self.out.write(bytes.join(b'',[item.tobytes(self) if item else struct.pack("i",-1) for item in value]))
+			self.out.write(bytes.join(b'',[item.tobytes() if item else struct.pack("i",-1) for item in value]))
 		elif issubclass(t,(_Vector,Matrix, Time)):
 			self.out.write(bytes.join(b'',[item.tobytes() for item in value]))
 		
@@ -644,8 +656,8 @@ class DataModel:
 	
 	def _write_element_index(self,elem):
 		if elem._is_placeholder or hasattr(elem,"_index"): return
-		self._write(elem.type, suppress_dict = False)
-		self._write(elem.name)
+		self._writeString(elem.type, suppress_dict = False)
+		self._writeString(elem.name)
 		self._write(elem.id)
 		
 		elem._index = len(self.elem_chain)
@@ -666,12 +678,12 @@ class DataModel:
 			self._write(len(elem))
 			for name in elem:
 				attr = elem[name]
-				self._write(name, suppress_dict = False)
+				self._write(name)
 				self._write( struct.pack("b", _get_dmx_type_id(self.encoding, self.encoding_ver, type(attr) )) )
 				if attr == None:
 					self._write(-1)
 				else:
-					self._write(attr,elem)
+					self._write(attr)
 					
 	def echo(self,encoding,encoding_ver):
 		check_support(encoding, encoding_ver)
@@ -795,8 +807,13 @@ def load(path = None, in_file = None, element_path = None):
 		check_support(encoding,encoding_ver)
 		dm = DataModel(format,format_ver)
 		
-		global line_number
-		line_number = 0
+		class LineTracker():
+			line = 0
+
+			def __next__(self):
+				self.line += 1
+
+		line_tracker = LineTracker()
 
 		max_elem_path = len(element_path) + 1 if element_path else 0
 		
@@ -810,9 +827,7 @@ def load(path = None, in_file = None, element_path = None):
 			def parse_line(line):
 				return re.findall("\"(.*?)\"",line.strip("\n\t ") )
 				
-			def read_element(elem_type):
-				global line_number
-				id = None
+			def read_element(elem_type, line_tracker):
 				name = None
 				prefix = elem_type == "$prefix_element$"
 				if prefix: element_chain.append(dm.prefix_attributes)
@@ -831,13 +846,13 @@ def load(path = None, in_file = None, element_path = None):
 					elif type_str == 'float': return float(kv2_value)
 					elif type_str == 'bool': return bool(int(kv2_value))
 					elif type_str == 'time': return Time(kv2_value)
-					elif type_str.startswith('vector') or type_str in ['color','quaternion','angle']:
+					elif type_str.startswith('vector') or type_str in ['color','quaternion','angle','matrix']:
 						return _get_type_from_string(type_str)( [float(i) for i in kv2_value.split(" ")] )
 					elif type_str == 'binary': return Binary(binascii.unhexlify(kv2_value))
 				
 				new_elem = None
 				for line_raw in in_file:
-					line_number += 1
+					next(line_tracker)
 					if line_raw.strip("\n\t, ").endswith("}"):
 						#print("{}- {}".format('\t' * (len(element_chain)-1),element_chain[-1].name))
 						return element_chain.pop()
@@ -852,8 +867,9 @@ def load(path = None, in_file = None, element_path = None):
 							element_chain.append(new_elem)
 						continue
 					elif line[0] == 'name':
-						if new_elem: new_elem.name = line[2]
-						else: name = line[2]
+						if len(line) > 2: # unnamed element?
+							if new_elem: new_elem.name = line[2]
+							else: name = line[2]
 						continue
 					
 					# don't read elements outside the element path
@@ -865,7 +881,7 @@ def load(path = None, in_file = None, element_path = None):
 						if skip:
 							child_level = 0
 							for line_raw in in_file:
-								line_number += 1
+								next(line_tracker)
 								if "{" in line_raw: child_level += 1
 								if "}" in line_raw:
 									if child_level == 0: return
@@ -884,13 +900,13 @@ def load(path = None, in_file = None, element_path = None):
 							
 							if "[" not in line_raw: # immediate "[" means and empty array; elements must be on separate lines
 								for line in in_file:
-									line_number += 1
+									next(line_tracker)
 									if "[" in line: continue
 									if "]" in line: break
 									line = parse_line(line)
 									
 									if len(line) == 1:
-										arr.append( read_element(line[0]) )
+										arr.append( read_element(line[0], line_tracker) )
 									elif len(line) == 2:
 										arr.append( read_value(arr_name,"element",line[1],index=len(arr)) )
 							
@@ -909,7 +925,7 @@ def load(path = None, in_file = None, element_path = None):
 								
 							else: # multi-line array
 								for line in in_file:
-									line_number += 1
+									next(line_tracker)
 									if "[" in line:
 										continue
 									if "]" in line:
@@ -917,22 +933,23 @@ def load(path = None, in_file = None, element_path = None):
 										break
 										
 									line = parse_line(line)
-									arr.append(read_value(arr_name,arr_type_str,line[0]))
+									if line:
+										arr.append(read_value(arr_name,arr_type_str,line[0]))
 						
 						elif len(line) == 2: # inline element or binary
 							if line[1] == "binary":
 								num_quotes = 0
 								value = Binary()
 								for line in in_file:
-									line_number += 1
+									next(line_tracker)
 									if "\"" in line:
 										num_quotes += 1
 										if num_quotes == 2: break
 									else:				
 										value = read_value(line[0],line[1], in_file.readline().strip())
-										line_number += 1
+										next(line_tracker)
 							else:
-								value = read_element(line[1])
+								value = read_element(line[1], line_tracker)
 							element_chain[-1][line[0]] = value
 						elif len(line) == 3: # ordinary attribute or element ID
 							element_chain[-1][line[0]] = read_value(line[0],line[1],line[2])
@@ -946,14 +963,14 @@ def load(path = None, in_file = None, element_path = None):
 			element_users = collections.defaultdict(list)
 			for line in in_file:
 				try:
-					line_number += 1
+					next(line_tracker)
 					line = parse_line(line)
 					if len(line) == 0: continue
 				
 					if len(element_chain) == 0 and len(line) == 1:
-						read_element(line[0])
+						read_element(line[0], line_tracker)
 				except Exception as ex:
-					raise DatamodelParseError("Parsing of {} failed on line {}".format(path, line_number)) from ex
+					raise DatamodelParseError("Parsing of {} failed on line {}".format(path, line_tracker.line)) from ex
 			
 			for element in dm.elements:
 				if element._is_placeholder == True: continue
@@ -989,7 +1006,7 @@ def load(path = None, in_file = None, element_path = None):
 				elif attr_type == Quaternion:	return Quaternion(get_vec(in_file,4))
 				elif attr_type == Matrix:
 					out = []
-					for i in range(4): out.append(get_vec(in_file,4))
+					for _ in range(4): out.append(get_vec(in_file,4))
 					return Matrix(out)
 					
 				elif attr_type == Color:		return get_color(in_file)
@@ -1002,8 +1019,8 @@ def load(path = None, in_file = None, element_path = None):
 			def read_element(elem, use_string_dict = True):
 				#print(elem.name,"@",in_file.tell())
 				num_attributes = get_int(in_file)
-				for i in range(num_attributes):
-					start = in_file.tell()
+				for _ in range(num_attributes):
+					#start = in_file.tell()
 					name = dm._string_dict.read_string(in_file) if use_string_dict else get_str(in_file)
 					attr_type = _get_dmx_id_type(encoding,encoding_ver,get_byte(in_file))
 					#print("\t",name,"@",start,attr_type)
@@ -1013,19 +1030,19 @@ def load(path = None, in_file = None, element_path = None):
 						array_len = get_int(in_file)
 						arr = elem[name] = attr_type()
 						arr_item_type = _get_single_type(attr_type)
-						for x in range(array_len):
+						for _ in range(array_len):
 							arr.append( get_value(arr_item_type,from_array=True) )
 
 			# prefix attributes
 			if encoding_ver >= 9:
-				for prefix_elem in range(get_int(in_file)):
+				for _ in range(get_int(in_file)):
 					read_element(dm.prefix_attributes, use_string_dict = False)
 			
 			dm._string_dict = _StringDictionary(encoding,encoding_ver,in_file=in_file)			
 			num_elements = get_int(in_file)
 			
 			# element headers
-			for i in range(num_elements):
+			for _ in range(num_elements):
 				elemtype = dm._string_dict.read_string(in_file)
 				name = dm._string_dict.read_string(in_file) if encoding_ver >= 4 else get_str(in_file)
 				id = uuid.UUID(bytes_le = in_file.read(16)) # little-endian

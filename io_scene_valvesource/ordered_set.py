@@ -4,15 +4,6 @@ entry has an index that can be looked up.
 
 Based on a recipe originally posted to ActiveState Recipes by Raymond Hettiger,
 and released under the MIT license.
-
-Rob Speer's changes are as follows:
-
-    - changed the content from a doubly-linked list to a regular Python list.
-      Seriously, who wants O(1) deletes but O(N) lookups by index?
-    - add() returns the index of the added item
-    - index() just returns the index of an item
-    - added a __getstate__ and __setstate__ so it can be pickled
-    - added __getitem__
 """
 import itertools as it
 from collections import deque
@@ -23,7 +14,10 @@ try:
 except ImportError:
     # Python 2.7
     from collections import MutableSet, Sequence
+
 SLICE_ALL = slice(None)
+__version__ = "3.1"
+
 
 def is_iterable(obj):
     """
@@ -43,6 +37,7 @@ def is_iterable(obj):
         and not isinstance(obj, str)
         and not isinstance(obj, tuple)
     )
+
 
 class OrderedSet(MutableSet, Sequence):
     """

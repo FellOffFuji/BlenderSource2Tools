@@ -1,8 +1,11 @@
-# BlenderSourceTools
+# BlenderSource2Tools
 Modified version of the Blender Source Tools with some Source 2 specific features.
 
+This version fixes the Min/Max parameters for vertex float maps that were broken since 2.9.3. Also, this version is updated to BlenderSourceTools 3.3.1 (The latest as of this writing)
+
 ~~Updated this addon for Blender 3.x~~
-## UPDATED TO WORK WITH BLENDER 4.0!!
+~~UPDATED TO WORK WITH BLENDER 4.0!!~~
+## UPDATED TO WORK WITH BLENDER 4.1+
 Original version: https://github.com/Artfunkel/BlenderSourceTools
 
 __Warning: This version is experimental and untested. It may corrupt your .blend files or have other nasty side effects. Please back up your files before using.__

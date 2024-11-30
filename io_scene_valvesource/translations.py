@@ -14,6 +14,9 @@ _data = {
 'vertmap_group_props': {
 	'en': "Vertex Maps",
 },
+'vertmap_group_props_float': {
+	'en': "Float Maps",
+},
 'action_selection_filter_tip': {
 	'en': "All actions that match the armature's filter term and have users",
 	'ru': "Все действия, которые подходят под фильтр имён действий и где-либо используются",
@@ -250,7 +253,7 @@ _data = {
 },
 'qc_title': {
 	'ja': "Source Engine QCのコンパイル",
-	'en': "Source Engine QC Complies",
+	'en': "Source Engine QC Compiles",
 	'ru': "Компиляция QC",
 },
 'exportables_flex_props': {
@@ -382,6 +385,9 @@ _data = {
 	'en': "Object {0} has no polygons, skipping",
 	'ru': "Пропуск объекта {0}: нет геометрии",
 },
+'exporter_err_hidden': {
+	'en': "Skipping {0}: object cannot be selected, probably due to being hidden by an animation driver.",
+},
 'exporter_err_arm_nonuniform': {
 	'en': "Armature \"{0}\" has non-uniform scale. Mesh deformation in Source will differ from Blender.",
 	'ru': "Скелет {0} масштабирован непропорционально. В движке Source скелет будет работать неправильно.",
@@ -405,6 +411,9 @@ _data = {
 'exporter_err_unmergable': {
 	'en': "Skipping vertex animations on Group \"{0}\", which could not be merged into a single DMX object due to its envelope. To fix this, either ensure that the entire Group has the same bone parent or remove all envelopes.",
 	'ru': "Пропуск вершинной анимации для группы «{0}», которую не удаётся слить в DMX-модель из-за огибающих. Проверьте, что у всей группы одна и та же кость-родитель или удалите все огибающие.",
+},
+'exporter_warn_source2names': {
+	'en': "Consider renaming \"{0}\": in Source 2, model names can contain only lower-case characters, digits, and/or underscores.",
 },
 'exporter_warn_unicode': {
 	'ja': "{0}「{1}」の名前はUnicode文字を含みます。間違ってコンパイルすることが可能です。",
@@ -452,6 +461,9 @@ _data = {
 },
 'exporter_warn_sanitised_filename': {
 	'en': "Sanitised exportable name \"{0}\" to \"{1}\"",
+},
+'exporter_warn_correctiveshape_duplicate': {
+	'en': "Corrective shape key \"{0}\" has the same activation conditions ({1}) as \"{2}\". Skipping.",
 },
 'exporter_err_flexctrl_missing': {
 	'en': "No flex controller defined for shape {0}.",
@@ -709,9 +721,18 @@ _data = {
 	'en': "Import Animations",
 	'ru': "Импортировать анимации",
 },
+'importer_use_collections':{
+	'en': "Create Collections",	
+},
+'importer_use_collections_tip':{
+	'en': "Create a Blender collection for each imported mesh file. This retains the original file structure (important for DMX) and makes it easy to switch between LODs etc. with the number keys",
+},
 'importer_err_missingbones': {
 	'en': "{0} contains {1} bones not present in {2}. Check the console for a list.",
 	'ru': "{1} костей из {0} не найдены в {2}.",
+},
+'importer_err_noanimationbones': {
+	'en': "No bones imported for animation {0}",
 },
 'importer_name_unmatchedvta': {
 	'en': "Unmatched VTA",
@@ -809,6 +830,15 @@ _data = {
 	'ja': "是正シェイプキーのドライバーを生成します",
 	'en': "Generate Corrective Shape Key Drivers",
 	'ru': "Создать драйверы для ключей форм коррекции",
+},
+'apply_drivers':{
+	'en': "Regenerate Shape Key Names From Drivers",
+},
+'apply_drivers_tip':{
+	'en': "Renames corrective shape keys so that each their names are a combination of the shape keys that control them (via Blender animation drivers)",
+},
+'apply_drivers_success':{
+	'en': "{0} shapes renamed.",
 },
 'vca_qcgen': {
 	'ja': "QCの抜粋を生成します",
@@ -973,7 +1003,7 @@ _data = {
 	'ru': "Порог веса привязки вершины к кости",
 },
 'dmx_weightlinkcull_tip': {
-	'en': "The maximum strength at which a weight link can be removed to comply with Source's per-vertex link limit.",
+	'en': "The maximum strength at which a weight link can be removed to comply with Source's per-vertex link limit",
 	'ru': "Если вершина связана с некоторой костью, и её вес меньше здесь указанного, то связь с этой костью будет удалена при экспорте, чтобы вписаться в ограничение движка Source. («Source не поддерживает такое количество привязок»)",
 },
 'dmx_encoding_tip': {
@@ -1035,7 +1065,7 @@ _data = {
 },
 }
 
-def _get_ids():
+def _get_ids():	
 	ids = {}
 	for id,values in _data.items():
 		ids[id] = values['en']
