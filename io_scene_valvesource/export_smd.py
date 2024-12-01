@@ -1123,7 +1123,7 @@ class SmdExporter(bpy.types.Operator, Logger):
 				data = ob.data
 
 				uv_loop = data.uv_layers.active.data
-				uv_tex = data.uv_layers.active.data
+				# uv_tex = data.uv_layers.active.data
 
 				weights = self.getWeightmap(bake)
 				
@@ -1577,9 +1577,18 @@ skeleton
 				self.warning(get_id("exporter_warn_weightlinks_excess",True).format(badJointCounts,bake.src.name,weight_link_limit))
 			if culled_weight_links:
 				self.warning(get_id("exporter_warn_weightlinks_culled",True).format(culled_weight_links,cull_threshold,bake.src.name))
-						
-			format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco'] ], str)
-			if have_weightmap: format.extend([keywords['weight'], keywords["weight_indices"]])
+
+			uv_layer = ob.data.uv_layers
+
+			if len(uv_layer) > 1:
+				format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco1']],str)
+				multipleuvs = 1
+			else:
+				# format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco']],str)
+				format = vertex_data["vertexFormat"] = datamodel.make_array([keywords['pos'], keywords['norm']], str)
+				multipleuvs = 0
+
+			# if have_weightmap: format.extend([keywords['weight'], keywords["weight_indices"]])
 
 			if cloth_groups:
 				for vgroup in cloth_groups:
@@ -1594,8 +1603,10 @@ skeleton
 			pos = [None] * num_verts
 			norms = [None] * num_loops
 			texco = ordered_set.OrderedSet()
+			texco1 = ordered_set.OrderedSet()
 			face_sets = collections.OrderedDict()
 			texcoIndices = [None] * num_loops
+			texcoIndices1 = [None] * num_loops
 			jointWeights = []
 			jointIndices = []
 			balance = [0.0] * num_verts
@@ -1666,6 +1677,8 @@ skeleton
 
 			for loop in [ob.data.loops[i] for poly in ob.data.polygons for i in poly.loop_indices]:
 				texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layer[loop.index].uv))
+				if(multipleuvs == 1):
+					texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layer[1].data[loop.index].uv))
 				norms[loop.index] = datamodel.Vector3(loop.normal)
 				Indices[loop.index] = loop.vertex_index					
 
@@ -1680,8 +1693,12 @@ skeleton
 			vertex_data[keywords['pos']] = datamodel.make_array((v.co for v in bm.verts),datamodel.Vector3)
 			vertex_data[keywords['pos'] + "Indices"] = datamodel.make_array((l.vert.index for f in bm.faces for l in f.loops),int)
 
-			vertex_data[keywords['texco']] = datamodel.make_array(texco,datamodel.Vector2)
-			vertex_data[keywords['texco'] + "Indices"] = datamodel.make_array(texcoIndices,int)
+			# vertex_data[keywords['texco']] = datamodel.make_array(texco,datamodel.Vector2)
+			# vertex_data[keywords['texco'] + "Indices"] = datamodel.make_array(texcoIndices,int)
+
+			if (multipleuvs == 1):
+				vertex_data[keywords['texco1']] = datamodel.make_array(texco1, datamodel.Vector2)
+				vertex_data[keywords['texco1'] + "Indices"] = datamodel.make_array(texcoIndices1, int)
 
 			if source2: # write out arbitrary vertex data
 				loops = [loop for face in bm.faces for loop in face.loops]

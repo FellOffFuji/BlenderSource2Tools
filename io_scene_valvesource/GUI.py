@@ -721,8 +721,8 @@ class SMD_PT_FloatMaps(ExportableConfigurationPanel):
 		#if not (is_group and item.vs.mute):
 		#	l.column().prop(item.vs, "subdir", icon='FILE_FOLDER')
 
-		if is_group or item.type in mesh_compatible:
-			pass
+		# if is_group or item.type in mesh_compatible:
+		# 	pass
 			# col = self.makeSettingsBox(text=get_id("vca_group_props"), icon=vca_icon)
 			#
 			# r = col.row(align=True)
@@ -737,8 +737,8 @@ class SMD_PT_FloatMaps(ExportableConfigurationPanel):
 			# 					  "active_vertex_animation", rows=2, maxrows=4)
 			# 	col.operator(SMD_OT_GenerateVertexAnimationQCSnippet.bl_idname, icon='SCRIPT')
 
-		if is_group:
-			pass
+		# if is_group:
+		# 	pass
 			# col = self.makeSettingsBox(text=" ", icon='NONE')
 			# if not item.vs.mute:
 			# 	col.template_list("SMD_UL_GroupItems", item.name, item, "objects", item.vs, "selected_item",
@@ -778,6 +778,7 @@ class SMD_PT_FloatMaps(ExportableConfigurationPanel):
 		# 			col.template_ID(armature.animation_data, "action", new="action.new")
 
 		objects = State.exportableObjects.intersection(item.objects) if is_group else [item]
+
 		# if item.vs.export and hasShapes(item) and bpy.context.scene.vs.export_format == 'DMX':
 		# 	col = self.makeSettingsBox(text=get_id("exportables_flex_props"), icon='SHAPEKEY_DATA')
 		#
