@@ -1678,7 +1678,7 @@ skeleton
 			for loop in [ob.data.loops[i] for poly in ob.data.polygons for i in poly.loop_indices]:
 				texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layer[loop.index].uv))
 				if(multipleuvs == 1):
-					texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layer[1].data[loop.index].uv))
+					texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layer[1].uv))
 				norms[loop.index] = datamodel.Vector3(loop.normal)
 				Indices[loop.index] = loop.vertex_index					
 

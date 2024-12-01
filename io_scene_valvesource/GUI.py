@@ -706,124 +706,18 @@ class SMD_PT_FloatMaps(ExportableConfigurationPanel):
 		l = self.layout
 		scene = context.scene
 
-		#l.template_list("SMD_UL_ExportItems", "", scene.vs, "export_list", scene.vs, "export_list_active", rows=3,
-		#				maxrows=8)
-
 		active_exportable = get_active_exportable(context)
 		if not active_exportable:
 			return
 
 		item = active_exportable.item
+		print(item)
 		is_group = type(item) == bpy.types.Collection
 
 		col = l.column()
 
-		#if not (is_group and item.vs.mute):
-		#	l.column().prop(item.vs, "subdir", icon='FILE_FOLDER')
-
-		# if is_group or item.type in mesh_compatible:
-		# 	pass
-			# col = self.makeSettingsBox(text=get_id("vca_group_props"), icon=vca_icon)
-			#
-			# r = col.row(align=True)
-			# r.operator(SMD_OT_AddVertexAnimation.bl_idname, icon="ADD", text="Add")
-			# op = r.operator(SMD_OT_RemoveVertexAnimation.bl_idname, icon="REMOVE", text="Remove")
-			# r.operator("wm.url_open", text=get_id("help", True),
-			# 		   icon='HELP').url = "http://developer.valvesoftware.com/wiki/Vertex_animation"
-			#
-			# if len(item.vs.vertex_animations) > 0:
-			# 	op.index = item.vs.active_vertex_animation
-			# 	col.template_list("SMD_UL_VertexAnimationItem", "", item.vs, "vertex_animations", item.vs,
-			# 					  "active_vertex_animation", rows=2, maxrows=4)
-			# 	col.operator(SMD_OT_GenerateVertexAnimationQCSnippet.bl_idname, icon='SCRIPT')
-
-		# if is_group:
-		# 	pass
-			# col = self.makeSettingsBox(text=" ", icon='NONE')
-			# if not item.vs.mute:
-			# 	col.template_list("SMD_UL_GroupItems", item.name, item, "objects", item.vs, "selected_item",
-			# 					  type='GRID', columns=2, rows=2, maxrows=10)
-			#
-			# r = col.row()
-			# r.alignment = 'CENTER'
-			# r.prop(item.vs, "mute")
-			# if item.vs.mute:
-			# 	return
-			# elif State.exportFormat == ExportFormat.DMX:
-			# 	r.prop(item.vs, "automerge")
-
-		# elif item:
-		# 	armature = item.find_armature()
-		# 	if item.type == 'ARMATURE': armature = item
-		# 	if armature:
-		# 		def _makebox():
-		# 			return self.makeSettingsBox(text=get_id("exportables_armature_props", True).format(armature.name),
-		# 										icon='OUTLINER_OB_ARMATURE')
-		#
-		# 		col = None
-		#
-		# 		if armature == item:  # only display action stuff if the user has actually selected the armature
-		# 			if not col: col = _makebox()
-		# 			col.row().prop(armature.data.vs, "action_selection", expand=True)
-		# 			if armature.data.vs.action_selection == 'FILTERED':
-		# 				col.prop(armature.vs, "action_filter")
-		#
-		# 		if not State.exportFormat == ExportFormat.DMX:
-		# 			if not col: col = _makebox()
-		# 			col.prop(armature.data.vs, "implicit_zero_bone")
-		# 			col.prop(armature.data.vs, "legacy_rotation")
-		#
-		# 		if armature.animation_data and not 'ActLib' in dir(bpy.types):
-		# 			if not col: col = _makebox()
-		# 			col.template_ID(armature.animation_data, "action", new="action.new")
-
 		objects = State.exportableObjects.intersection(item.objects) if is_group else [item]
 
-		# if item.vs.export and hasShapes(item) and bpy.context.scene.vs.export_format == 'DMX':
-		# 	col = self.makeSettingsBox(text=get_id("exportables_flex_props"), icon='SHAPEKEY_DATA')
-		#
-		# 	col.row().prop(item.vs, "flex_controller_mode", expand=True)
-		#
-		# 	if item.vs.flex_controller_mode == 'ADVANCED':
-		# 		controller_source = col.row()
-		# 		controller_source.alert = hasFlexControllerSource(item.vs.flex_controller_source) == False
-		# 		controller_source.prop(item.vs, "flex_controller_source", text=get_id("exportables_flex_src"),
-		# 							   icon='TEXT' if item.vs.flex_controller_source in bpy.data.texts else 'NONE')
-		#
-		# 		row = col.row(align=True)
-		# 		row.operator(DmxWriteFlexControllers.bl_idname, icon='TEXT',
-		# 					 text=get_id("exportables_flex_generate", True))
-		# 		row.operator("wm.url_open", text=get_id("exportables_flex_help", True),
-		# 					 icon='HELP').url = "http://developer.valvesoftware.com/wiki/Blender_SMD_Tools_Help#Flex_properties"
-		#
-		# 		col.operator(AddCorrectiveShapeDrivers.bl_idname, icon='DRIVER', text=get_id("gen_drivers", True))
-		#
-		# 		datablocks_dispayed = []
-		#
-		# 		for ob in [ob for ob in objects if
-		# 				   ob.vs.export and ob.type in shape_types and ob.active_shape_key and ob.data not in datablocks_dispayed]:
-		# 			if not len(datablocks_dispayed):
-		# 				col.label(text=get_id("exportables_flex_split"))
-		# 				sharpness_col = col.column(align=True)
-		# 			r = sharpness_col.split(factor=0.33, align=True)
-		# 			r.label(text=ob.data.name + ":", icon=MakeObjectIcon(ob, suffix='_DATA'), translate=False)
-		# 			r2 = r.split(factor=0.7, align=True)
-		# 			if ob.data.vs.flex_stereo_mode == 'VGROUP':
-		# 				r2.alert = ob.vertex_groups.get(ob.data.vs.flex_stereo_vg) is None
-		# 				r2.prop_search(ob.data.vs, "flex_stereo_vg", ob, "vertex_groups", text="")
-		# 			else:
-		# 				r2.prop(ob.data.vs, "flex_stereo_sharpness", text="Sharpness")
-		# 			r2.prop(ob.data.vs, "flex_stereo_mode", text="")
-		# 			datablocks_dispayed.append(ob.data)
-		#
-		# 	num_shapes, num_correctives = countShapes(objects)
-		#
-		# 	col.separator()
-		# 	row = col.row()
-		# 	row.alignment = 'CENTER'
-		# 	row.label(icon='SHAPEKEY_DATA', text=get_id("exportables_flex_count", True).format(num_shapes))
-		# 	row.label(icon='SHAPEKEY_DATA',
-		# 			  text=get_id("exportables_flex_count_corrective", True).format(num_correctives))
 		if context.active_object:
 			if context.active_object.type == 'MESH':
 				title = get_id("vertmap_group_props_float")
@@ -833,22 +727,6 @@ class SMD_PT_FloatMaps(ExportableConfigurationPanel):
 				col = self.makeSettingsBox(text=title, icon='VPAINT_HLT')
 
 				r = col.row()
-				# r.label(text="Color Maps")
-
-				# for map_name in vertex_maps:
-				# 	r = col.row()  # .split(factor=0.80)
-				# 	# r.label(text=get_id(map_name),icon='GROUP_VCOL')
-				# 	r.operator(SMD_OT_SelectVertexMap_idname + map_name, text=get_id(map_name), icon='GROUP_VCOL')
-				#
-				# 	r = r.row()
-				# 	add_remove = r.row(align=True)
-				# 	add_remove.operator(SMD_OT_CreateVertexMap_idname + map_name, icon='ADD', text="")
-				# 	add_remove.operator(SMD_OT_RemoveVertexMap_idname + map_name, icon='REMOVE', text="")
-				# # r.operator(SMD_OT_SelectVertexMap_idname + map_name,text="Activate")
-				#
-				# col.separator()
-				# r = col.row()
-				# r.label(text="Float Maps")
 
 				for map_name in vertex_float_maps:
 					r = col.row().split(factor=0.50)
