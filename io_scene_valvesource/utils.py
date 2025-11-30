@@ -643,7 +643,8 @@ def make_export_list(scene):
 				i.obj = ob
 
 class Logger:
-	def __init__(self):
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
 		self.log_warnings = []
 		self.log_errors = []
 		self.startTime = time.time()

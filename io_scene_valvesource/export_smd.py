@@ -130,7 +130,8 @@ class SmdExporter(bpy.types.Operator, Logger):
 	bl_idname = "export_scene.smd"
 	bl_label = get_id("exporter_title")
 	bl_description = get_id("exporter_tip")
-	
+
+
 	collection : bpy.props.StringProperty(name=get_id("exporter_prop_group"),description=get_id("exporter_prop_group_tip"))
 	export_scene : bpy.props.BoolProperty(name=get_id("scene_export"),description=get_id("exporter_prop_scene_tip"),default=False)
 
@@ -144,6 +145,15 @@ class SmdExporter(bpy.types.Operator, Logger):
 		return {'PASS_THROUGH'}
 
 	def execute(self, context):
+		if not hasattr(self, "log_warnings"):
+			self.log_warnings = []
+		if not hasattr(self, "log_errors"):
+			self.log_errors = []
+		if not hasattr(self, "startTime"):
+			self.startTime = time.time()
+		if not hasattr(self, "files_exported"):
+			self.files_exported = 0
+
 		#bpy.context.window_manager.progress_begin(0,1)
 		
 		# Misconfiguration?

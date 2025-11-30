@@ -56,6 +56,14 @@ class SmdImporter(bpy.types.Operator, Logger):
 	boneMode : EnumProperty(name=get_id("importer_bonemode"),items=(('NONE','Default',''),('ARROWS','Arrows',''),('SPHERE','Sphere','')),default='SPHERE',description=get_id("importer_bonemode_tip"))
 	
 	def execute(self, context):
+
+		if not hasattr(self, "log_warnings"):
+			self.log_warnings = []
+		if not hasattr(self, "log_errors"):
+			self.log_errors = []
+		if not hasattr(self, "startTime"):
+			self.startTime = time.time()
+
 		pre_obs = set(bpy.context.scene.objects)
 		pre_eem = context.preferences.edit.use_enter_edit_mode
 		pre_append = self.append
@@ -438,7 +446,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 			ops.pose.armature_apply()
 
 			bone_vis = None if self.properties.boneMode == 'NONE' else bpy.data.objects.get("smd_bone_vis")
-			
+
 			if self.properties.boneMode == 'SPHERE' and (not bone_vis or bone_vis.type != 'MESH'):
 					ops.mesh.primitive_ico_sphere_add(subdivisions=3,radius=2)
 					bone_vis = bpy.context.active_object
@@ -452,7 +460,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 					bone_vis.use_fake_user = True
 					bone_vis.empty_display_type = 'ARROWS'
 					bone_vis.empty_display_size = 5
-				
+
 			# Calculate armature dimensions...Blender should be doing this!
 			maxs = [0,0,0]
 			mins = [0,0,0]
@@ -460,55 +468,66 @@ class SmdImporter(bpy.types.Operator, Logger):
 				for i in range(3):
 					maxs[i] = max(maxs[i],bone.head_local[i])
 					mins[i] = min(mins[i],bone.head_local[i])
-		
+
 			dimensions = []
 			if self.qc: self.qc.dimensions = dimensions
 			for i in range(3):
 				dimensions.append(maxs[i] - mins[i])
-		
+
 			length = max(0.001, (dimensions[0] + dimensions[1] + dimensions[2]) / 600) # very small indeed, but a custom bone is used for display
-		
+
 			# Apply spheres
 			ops.object.mode_set(mode='EDIT')
 			for bone in [smd.a.data.edit_bones[b.name] for b in keyframes.keys()]:
 				bone.tail = bone.head + (bone.tail - bone.head).normalized() * length # Resize loose bone tails based on armature size
 				smd.a.pose.bones[bone.name].custom_shape = bone_vis # apply bone shape
-				
-		
+
+
 		if smd.jobType == ANIM:
 			if not smd.a.animation_data:
 				smd.a.animation_data_create()
-			
+
 			action = bpy.data.actions.new(smd.jobName)
-			
+
+			# Define the action slot
+			slot_name = smd.a.name + "_slot"
+			slot = action.slots.new(id_type='OBJECT', name=slot_name)
+
 			if 'ActLib' in dir(bpy.types):
 				smd.a.animation_data.action_library.add()
 			else:
 				action.use_fake_user = True
-				
+
+			# Assign the action
 			smd.a.animation_data.action = action
-			
+
+			smd.a.animation_data.action_slot = slot
+
+			layer = action.layers.new("ImportLayer")
+			strip = layer.strips.new(type='KEYFRAME')
+			# Get the channelbag that links the strip/layer to the specific slot
+			master_channelbag = strip.channelbag(slot, ensure=True)
+
 			if 'fps' in dir(action):
 				action.fps = fps if fps else 30
 				bpy.context.scene.render.fps = 60
 				bpy.context.scene.render.fps_base = 1
-		
+
 			ops.object.mode_set(mode='POSE')
-		
-			# Create an animation
+
 			if 'ActLib' in dir(bpy.types):
 				bpy.context.scene.use_preview_range = bpy.context.scene.use_preview_range_action_lock = True
 			else:
 				bpy.context.scene.frame_start = 0
-				bpy.context.scene.frame_end = num_frames - 1		
-			
+				bpy.context.scene.frame_end = num_frames - 1
+
 			for bone in smd.a.pose.bones:
 				bone.rotation_mode = smd.rotMode
-				
+
 			for bone,frames in list(keyframes.items()):
 				if not frames:
 					del keyframes[bone]
-			
+
 			if smd.isDMX == False:
 				# Remove every point but the first unless there is motion
 				still_bones = list(keyframes.keys())
@@ -521,51 +540,53 @@ class SmdImporter(bpy.types.Operator, Logger):
 							break
 				for bone in still_bones:
 					keyframes[bone] = [keyframes[bone][0]]
-			
+
 			# Create Blender keyframes
 			def ApplyRecursive(bone):
 				keys = keyframes.get(bone)
 				if keys:
-					# Generate curves
 					curvesLoc = None
 					curvesRot = None
-					bone_string = "pose.bones[\"{}\"].".format(bone.name)				
-					group = action.groups.new(name=bone.name)
+					bone_string = "pose.bones[\"{}\"].".format(bone.name)
+
+					# Get channelbag and group from the master channelbag
+					# Get the specific channelbag context for this bone's properties
+					# This is where F-curves and groups are now added
+					bone_channelbag = master_channelbag
+					group = bone_channelbag.groups.new(bone.name)
+
 					for keyframe in keys:
 						if curvesLoc and curvesRot: break
 						if keyframe.pos and not curvesLoc:
 							curvesLoc = []
 							for i in range(3):
-								curve = action.fcurves.new(data_path=bone_string + "location",index=i)
+								curve = bone_channelbag.fcurves.new(data_path=bone_string + "location",index=i)
 								curve.group = group
 								curvesLoc.append(curve)
 						if keyframe.rot and not curvesRot:
 							curvesRot = []
 							for i in range(3 if smd.rotMode == 'XYZ' else 4):
-								curve = action.fcurves.new(data_path=bone_string + "rotation_" + ("euler" if smd.rotMode == 'XYZ' else "quaternion"),index=i)
+								curve = bone_channelbag.fcurves.new(data_path=bone_string + "rotation_" + ("euler" if smd.rotMode == 'XYZ' else "quaternion"),index=i)
 								curve.group = group
 								curvesRot.append(curve)
-					
+
 					# Apply each imported keyframe
 					for keyframe in keys:
-						# Transform
 						if smd.a.data.vs.legacy_rotation:
 							keyframe.matrix @= mat_BlenderToSMD.inverted()
-						
+
 						if bone.parent:
 							if smd.a.data.vs.legacy_rotation: parentMat = bone.parent.matrix @ mat_BlenderToSMD
 							else: parentMat = bone.parent.matrix
 							bone.matrix = parentMat @ keyframe.matrix
 						else:
 							bone.matrix = getUpAxisMat(smd.upAxis) @ keyframe.matrix
-						
-						# Key location					
+
 						if keyframe.pos:
 							for i in range(3):
 								curvesLoc[i].keyframe_points.add(1)
 								curvesLoc[i].keyframe_points[-1].co = [keyframe.frame, bone.location[i]]
-						
-						# Key rotation
+
 						if keyframe.rot:
 							if smd.rotMode == 'XYZ':
 								for i in range(3):
@@ -579,13 +600,14 @@ class SmdImporter(bpy.types.Operator, Logger):
 				# Recurse
 				for child in bone.children:
 					ApplyRecursive(child)
-			
+
 			# Start keying
-			for bone in smd.a.pose.bones:			
+			for bone in smd.a.pose.bones:
 				if not bone.parent:
 					ApplyRecursive(bone)
-			
-			for fc in action.fcurves:
+
+			# Iterate over the master channelbag's F-curves
+			for fc in master_channelbag.fcurves:
 				fc.update()
 
 		# clear any unkeyed poses
@@ -594,14 +616,15 @@ class SmdImporter(bpy.types.Operator, Logger):
 			if smd.rotMode == 'XYZ': bone.rotation_euler.zero()
 			else: bone.rotation_quaternion.identity()
 		scn = bpy.context.scene
-		
+
 		if scn.frame_current == 1: # Blender starts on 1, Source starts on 0
 			scn.frame_set(0)
 		else:
 			scn.frame_set(scn.frame_current)
 		ops.object.mode_set(mode='OBJECT')
-		
+
 		print( "- Imported {} frames of animation".format(num_frames) )
+
 
 	def getMeshMaterial(self,mat_name):
 		smd = self.smd
@@ -1532,7 +1555,10 @@ class SmdImporter(bpy.types.Operator, Logger):
 								joint_index += 1
 					
 						joints = DmeModel["jointList"] if dm.format_ver >= 11 else DmeModel["jointTransforms"];
-						for boneName in (joints[i].name for i in weighted_bone_indices):
+
+						valid_weighted_indices = [i for i in weighted_bone_indices if 0 <= i < len(joints)]
+
+						for boneName in (joints[i].name for i in valid_weighted_indices):
 							deform_group_names.add(boneName)
 					
 					for face_set in DmeMesh["faceSets"]:
