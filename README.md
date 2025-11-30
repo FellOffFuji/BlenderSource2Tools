@@ -5,7 +5,8 @@ This version fixes the Min/Max parameters for vertex float maps that were broken
 
 ~~Updated this addon for Blender 3.x~~
 ~~UPDATED TO WORK WITH BLENDER 4.0!!~~
-## UPDATED TO WORK WITH BLENDER 4.1+
+~~UPDATED TO WORK WITH BLENDER 4.1+~~
+## UPDATED TO WORK WITH BLENDER 4.4+ (TESTED ON 5.0)
 Original version: https://github.com/Artfunkel/BlenderSourceTools
 
 __Warning: This version is experimental and untested. It may corrupt your .blend files or have other nasty side effects. Please back up your files before using.__
