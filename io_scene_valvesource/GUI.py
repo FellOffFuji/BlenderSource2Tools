@@ -19,6 +19,8 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import bpy
+import math
+from mathutils import Matrix, Euler
 from .utils import *
 from .export_smd import SmdExporter, SMD_OT_Compile
 # from .update import SmdToolsUpdate # comment this line if you make third-party changes
@@ -847,3 +849,159 @@ class SMD_PT_Scene_QC_Complie(bpy.types.Panel):
 		filesRow.prop(scene.vs,"qc_path") # can't add this until the above test completes!
 		
 		l.operator(SMD_OT_LaunchHLMV.bl_idname,icon='PREFERENCES',text=get_id("launch_hlmv",True))
+
+class VMDL_OT_CorrectOrientation(bpy.types.Operator):
+    bl_idname = "vmdl.orientation"
+    bl_label = "Correct Node Orientation"
+    bl_description = "Applies orientation corrections to selected attachment nodes via matrix multiplication at origin."
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_empties = [obj for obj in context.selected_objects if obj.type == 'EMPTY']
+
+        if not selected_empties:
+            self.report({'WARNING'}, "No attachment nodes (Empty objects) selected.")
+            return {'CANCELLED'}
+
+        # 1) +90 deg about global Z
+        # 2) +90 deg about global Y
+        Rz_pos = Matrix.Rotation(math.radians(+90.0), 4, 'Z')
+        Ry_pos = Matrix.Rotation(math.radians(+90.0), 4, 'Y')
+
+        # Apply Z first, then Y -> left multiply with Ry @ Rz
+        correction_matrix = Ry_pos @ Rz_pos
+
+        # Apply to each selected empty (left-multiply to transform in world space about origin)
+        for obj in selected_empties:
+            obj.matrix_world = correction_matrix @ obj.matrix_world
+
+        self.report({'INFO'}, f"Successfully applied matrix correction to {len(selected_empties)} attachment nodes.")
+        return {'FINISHED'}
+
+
+
+class VMDL_OT_CopyToClipboard(bpy.types.Operator):
+	bl_idname = "vmdl.clipboard"
+	bl_label = "Copy Nodes to Clipboard"
+	bl_description = "Copies selected attachment node data (location/rotation) to the clipboard in ModelDoc KV3 format."
+	bl_options = {'REGISTER'}
+
+	DEFAULT_PARENT_BONE = "root_motion"
+
+	def get_camera_preview_kv3(self):
+		# Indentation for the camera block (8 tabs for the outer section, 9 for properties)
+		return """\t\t\t\t\t\t\tchildren = 
+\t\t\t\t\t\t\t[
+\t\t\t\t\t\t\t\t{
+\t\t\t\t\t\t\t\t\t_class = "Attachment Camera Preview"
+\t\t\t\t\t\t\t\t\tfov = 90
+\t\t\t\t\t\t\t\t\tscreen_width_for_aspect = 1920
+\t\t\t\t\t\t\t\t\tscreen_height_for_aspect = 1080
+\t\t\t\t\t\t\t\t\tpreview_scale = 0.3
+\t\t\t\t\t\t\t\t\tbackground_color = [ 70, 70, 70 ]
+\t\t\t\t\t\t\t\t},
+\t\t\t\t\t\t\t]"""
+
+	def format_kv3_attachment(self, name, origin_vector, angles_euler, include_camera):
+
+		origin_x = origin_vector.x
+		origin_y = origin_vector.y
+		origin_z = origin_vector.z
+
+		angles_deg = [
+			math.degrees(angles_euler.x),
+			math.degrees(angles_euler.y),
+			math.degrees(angles_euler.z),
+		]
+
+		origin_str = f"[ {origin_x:.6f}, {origin_y:.6f}, {origin_z:.6f} ]"
+		angles_str = f"[ {angles_deg[0]:.6f}, {angles_deg[1]:.6f}, {angles_deg[2]:.6f} ]"
+
+		camera_block = ""
+		if include_camera:
+			camera_block = self.get_camera_preview_kv3()
+
+		# Note: The camera_block is inserted immediately after 'name' and before 'parent_bone'
+		return f"""\t\t\t\t\t\t{{
+\t\t\t\t\t\t\t_class = "Attachment"
+\t\t\t\t\t\t\tname = "{name}"
+{camera_block}
+\t\t\t\t\t\t\tparent_bone = "{self.DEFAULT_PARENT_BONE}"
+\t\t\t\t\t\t\trelative_origin = {origin_str}
+\t\t\t\t\t\t\trelative_angles = {angles_str}
+\t\t\t\t\t\t\tweight = 1.0
+\t\t\t\t\t\t\tignore_rotation = false
+\t\t\t\t\t\t}},"""
+
+	def execute(self, context):
+		selected_attachments = [
+			obj for obj in context.selected_objects
+			if obj.type == 'EMPTY'
+		]
+
+		if not selected_attachments:
+			self.report({'WARNING'}, "No Empty objects selected to copy.")
+			return {'CANCELLED'}
+
+		include_camera = context.scene.vmdl_export_camera
+
+		attachment_blocks = []
+		for obj in context.selected_objects:
+			if obj.type == 'EMPTY':
+				origin = obj.matrix_world.to_translation()
+				angles = obj.matrix_world.to_euler('XYZ')
+
+				kv3_block = self.format_kv3_attachment(obj.name, origin, angles, include_camera)
+				attachment_blocks.append(kv3_block)
+
+		attachments_content = "\n".join(attachment_blocks)
+
+		if attachments_content.endswith(",\n"):
+			attachments_content = attachments_content[:-2]
+		elif attachments_content.endswith(","):
+			attachments_content = attachments_content[:-1]
+
+		KV3_HEADER = "<!-- kv3 encoding:text:version{e21c7f3c-8a33-41c5-9977-a76d3a32aa0d} format:modeldoc40:version{da0ab1f8-9722-4910-94b8-10b6a08c0934} -->"
+
+		kv3_clipboard_content = f"""{KV3_HEADER}
+{{
+\trootNode = 
+\t{{
+\t\t_class = "RootNode"
+\t\tchildren = 
+\t\t[
+\t\t\t{{
+\t\t\t\t_class = "ScratchArea"
+\t\t\t\tchildren = 
+\t\t\t\t[
+{attachments_content}
+\t\t\t\t]
+\t\t\t}},
+\t\t]
+\t\tmodel_archetype = ""
+\t\tprimary_associated_entity = ""
+\t\tanim_graph_name = ""
+\t\tdocument_sub_type = "ModelDocSubType_None"
+\t}}
+}}"""
+
+		context.window_manager.clipboard = kv3_clipboard_content
+
+		self.report({'INFO'},
+					f"Copied {len(attachment_blocks)} attachment nodes to clipboard (Camera Preview: {'Enabled' if include_camera else 'Disabled'}).")
+		return {'FINISHED'}
+
+class VMDL_PT_Attachments_Tools(bpy.types.Panel):
+	bl_label = "Source 2 Attachment Tools"
+	bl_space_type = "PROPERTIES"
+	bl_region_type = "WINDOW"
+	bl_context = "scene"
+	bl_options = {'DEFAULT_CLOSED'}
+
+	def draw(self, context):
+		layout = self.layout
+		scene = context.scene
+		layout.operator(VMDL_OT_CorrectOrientation.bl_idname, text="Correct Node Orientation", icon='AXIS_SIDE')
+		layout.operator(VMDL_OT_CopyToClipboard.bl_idname, text="Copy Node Data to Clipboard", icon='COPY_ID')
+		row = layout.row()
+		row.prop(scene, "vmdl_export_camera")

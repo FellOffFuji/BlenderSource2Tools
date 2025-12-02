@@ -1132,6 +1132,12 @@ class SmdExporter(bpy.types.Operator, Logger):
 				ob = bake.object
 				data = ob.data
 
+				try:
+					data.calc_normals_split()
+					data.calc_tangents()
+				except Exception as e:
+					self.error(f"Failed to calculate mesh data for DMX: {e}")
+
 				uv_loop = data.uv_layers.active.data
 				# uv_tex = data.uv_layers.active.data
 
@@ -1347,15 +1353,15 @@ skeleton
 		return 1
 
 	def writeDMX(self, id, bake_results, name, dir_path):
-		bench = BenchMarker(1,"DMX")
-		filepath = os.path.realpath(os.path.join(dir_path,name + ".dmx"))
-		print("-",filepath)
+		bench = BenchMarker(1, "DMX")
+		filepath = os.path.realpath(os.path.join(dir_path, name + ".dmx"))
+		print("-", filepath)
 		armature_name = self.armature_src.name if self.armature_src else name
 		materials = {}
 		written = 0
-		
-		def makeTransform(name,matrix,object_name):
-			trfm = dm.add_element(name,"DmeTransform",id=object_name+"transform")
+
+		def makeTransform(name, matrix, object_name):
+			trfm = dm.add_element(name, "DmeTransform", id=object_name + "transform")
 			trfm["position"] = datamodel.Vector3(matrix.to_translation())
 			trfm["orientation"] = getDatamodelQuat(matrix.to_quaternion())
 
@@ -1364,48 +1370,49 @@ skeleton
 				trfm["scale"] = (scale_vec.x + scale_vec.y + scale_vec.z) / 3
 
 			return trfm
-		
-		dm = datamodel.DataModel("model",State.datamodelFormat)
+
+		dm = datamodel.DataModel("model", State.datamodelFormat)
 		dm.allow_random_ids = False
 
 		source2 = dm.format_ver >= 22
 
-		root = dm.add_element(bpy.context.scene.name,id="Scene"+bpy.context.scene.name)
-		DmeModel = dm.add_element(armature_name,"DmeModel",id="Object" + armature_name)
-		DmeModel_children = DmeModel["children"] = datamodel.make_array([],datamodel.Element)
-		
-		DmeModel_transforms = dm.add_element("base","DmeTransformList",id="transforms"+bpy.context.scene.name)
-		DmeModel["baseStates"] = datamodel.make_array([ DmeModel_transforms ],datamodel.Element)
-		DmeModel_transforms["transforms"] = datamodel.make_array([],datamodel.Element)
+		root = dm.add_element(bpy.context.scene.name, id="Scene" + bpy.context.scene.name)
+		DmeModel = dm.add_element(armature_name, "DmeModel", id="Object" + armature_name)
+		DmeModel_children = DmeModel["children"] = datamodel.make_array([], datamodel.Element)
+
+		DmeModel_transforms = dm.add_element("base", "DmeTransformList", id="transforms" + bpy.context.scene.name)
+		DmeModel["baseStates"] = datamodel.make_array([DmeModel_transforms], datamodel.Element)
+		DmeModel_transforms["transforms"] = datamodel.make_array([], datamodel.Element)
 		DmeModel_transforms = DmeModel_transforms["transforms"]
 
 		if source2:
-			DmeAxisSystem = DmeModel["axisSystem"] = dm.add_element("axisSystem","DmeAxisSystem","AxisSys" + armature_name)
+			DmeAxisSystem = DmeModel["axisSystem"] = dm.add_element("axisSystem", "DmeAxisSystem",
+																	"AxisSys" + armature_name)
 			DmeAxisSystem["upAxis"] = axes_lookup_source2[bpy.context.scene.vs.up_axis]
 			DmeAxisSystem["forwardParity"] = axes_lookup_source2_signed[bpy.context.scene.vs.forward_parity]
-			DmeAxisSystem["coordSys"] = 0 # ?? - Maybe global vs local coordinates
-		
-		DmeModel["transform"] = makeTransform("",Matrix(),DmeModel.name + "transform")
+			DmeAxisSystem["coordSys"] = 0  # ?? - Maybe global vs local coordinates
+
+		DmeModel["transform"] = makeTransform("", Matrix(), DmeModel.name + "transform")
 
 		keywords = getDmxKeywords(dm.format_ver)
-				
+
 		# skeleton
 		root["skeleton"] = DmeModel
 		want_jointlist = dm.format_ver >= 11
-		want_jointtransforms = dm.format_ver in range(0,21)
+		want_jointtransforms = dm.format_ver in range(0, 21)
 		if want_jointlist:
-			jointList = DmeModel["jointList"] = datamodel.make_array([],datamodel.Element)
+			jointList = DmeModel["jointList"] = datamodel.make_array([], datamodel.Element)
 			if source2:
 				jointList.append(DmeModel)
 		if want_jointtransforms:
-			jointTransforms = DmeModel["jointTransforms"] = datamodel.make_array([],datamodel.Element)		
+			jointTransforms = DmeModel["jointTransforms"] = datamodel.make_array([], datamodel.Element)
 			if source2:
 				jointTransforms.append(DmeModel["transform"])
 		bone_elements = {}
 		if self.armature: armature_scale = self.armature.matrix_world.to_scale()
-		
+
 		def writeBone(bone):
-			if isinstance(bone,str):
+			if isinstance(bone, str):
 				bone_name = bone
 				bone = None
 			else:
@@ -1416,11 +1423,13 @@ skeleton
 					return children
 				bone_name = bone.name
 
-			bone_elements[bone_name] = bone_elem = dm.add_element(bone_name,"DmeJoint",id=bone_name)
+			bone_elements[bone_name] = bone_elem = dm.add_element(bone_name, "DmeJoint", id=bone_name)
 			if want_jointlist: jointList.append(bone_elem)
-			self.bone_ids[bone_name] = len(bone_elements) - (0 if source2 else 1) # in Source 2, index 0 is the DmeModel
-			
-			if not bone: relMat = Matrix()
+			self.bone_ids[bone_name] = len(bone_elements) - (
+				0 if source2 else 1)  # in Source 2, index 0 is the DmeModel
+
+			if not bone:
+				relMat = Matrix()
 			else:
 				cur_p = bone.parent
 				while cur_p and not cur_p in self.exportable_bones: cur_p = cur_p.parent
@@ -1439,34 +1448,35 @@ skeleton
 			if bpy.context.scene.vs.bone_swap_forward_axis:
 				relMat = relMat @ Matrix.Rotation(radians(90.0), 4, 'Z')
 
-			trfm = makeTransform(bone_name,relMat,"bone"+bone_name)
-			trfm_base = makeTransform(bone_name,relMat,"bone_base"+bone_name)
-			
+			trfm = makeTransform(bone_name, relMat, "bone" + bone_name)
+			trfm_base = makeTransform(bone_name, relMat, "bone_base" + bone_name)
+
 			if bone and bone.parent:
 				for j in range(3):
 					trfm["position"][j] *= armature_scale[j]
 			trfm_base["position"] = trfm["position"]
-			
+
 			if want_jointtransforms: jointTransforms.append(trfm)
 			bone_elem["transform"] = trfm
-			
+
 			DmeModel_transforms.append(trfm_base)
-			
+
 			if bone:
-				children = bone_elem["children"] = datamodel.make_array([],datamodel.Element)
+				children = bone_elem["children"] = datamodel.make_array([], datamodel.Element)
 				for child_elems in [writeBone(child) for child in bone.children]:
 					if child_elems: children.extend(child_elems)
 
-				bpy.context.window_manager.progress_update(len(bone_elements)/num_bones)
+				bpy.context.window_manager.progress_update(len(bone_elements) / num_bones)
 			return [bone_elem]
-	
+
 		if self.armature:
 			num_bones = len(self.exportable_bones)
 			add_implicit_bone = not source2
-			
+
 			if add_implicit_bone:
 				DmeModel_children.extend(writeBone(implicit_bone_name))
-			for root_elems in [writeBone(bone) for bone in self.armature.pose.bones if not bone.parent and not (add_implicit_bone and bone.name == implicit_bone_name)]:
+			for root_elems in [writeBone(bone) for bone in self.armature.pose.bones if
+							   not bone.parent and not (add_implicit_bone and bone.name == implicit_bone_name)]:
 				if root_elems: DmeModel_children.extend(root_elems)
 
 			bench.report("Bones")
@@ -1478,21 +1488,21 @@ skeleton
 		for _ in [bake for bake in bake_results if bake.shapes]:
 			if self.flex_controller_mode == 'ADVANCED':
 				if not hasFlexControllerSource(self.flex_controller_source):
-					self.error(get_id("exporter_err_flexctrl_undefined",True).format(name) )
+					self.error(get_id("exporter_err_flexctrl_undefined", True).format(name))
 					return written
 
 				text = bpy.data.texts.get(self.flex_controller_source)
 				msg = "- Loading flex controllers from "
-				element_path = [ "combinationOperator" ]
+				element_path = ["combinationOperator"]
 				try:
 					if text:
 						print(msg + "text block \"{}\"".format(text.name))
-						controller_dm = datamodel.parse(text.as_string(),element_path=element_path)
+						controller_dm = datamodel.parse(text.as_string(), element_path=element_path)
 					else:
 						path = os.path.realpath(bpy.path.abspath(self.flex_controller_source))
 						print(msg + path)
-						controller_dm = datamodel.load(path=path,element_path=element_path)
-			
+						controller_dm = datamodel.load(path=path, element_path=element_path)
+
 					DmeCombinationOperator = controller_dm.root["combinationOperator"]
 
 					for elem in [elem for elem in DmeCombinationOperator["targets"] if elem.type != "DmeFlexRules"]:
@@ -1514,44 +1524,41 @@ skeleton
 
 		for bake in [bake for bake in bake_results if bake.object.type != 'ARMATURE']:
 			root["model"] = DmeModel
-			
+
 			ob = bake.object
-			
-			vertex_data = dm.add_element("bind","DmeVertexData",id=bake.name+"verts")
-			
-			DmeMesh = dm.add_element(bake.name,"DmeMesh",id=bake.name+"mesh")
-			DmeMesh["visible"] = True			
+
+			vertex_data = dm.add_element("bind", "DmeVertexData", id=bake.name + "verts")
+
+			DmeMesh = dm.add_element(bake.name, "DmeMesh", id=bake.name + "mesh")
+			DmeMesh["visible"] = True
 			DmeMesh["bindState"] = vertex_data
 			DmeMesh["currentState"] = vertex_data
-			DmeMesh["baseStates"] = datamodel.make_array([vertex_data],datamodel.Element)
-						
-			DmeDag = dm.add_element(bake.name,"DmeDag",id="ob"+bake.name+"dag")
+			DmeMesh["baseStates"] = datamodel.make_array([vertex_data], datamodel.Element)
+
+			DmeDag = dm.add_element(bake.name, "DmeDag", id="ob" + bake.name + "dag")
 			if want_jointlist: jointList.append(DmeDag)
 			DmeDag["shape"] = DmeMesh
-			
+
 			bone_child = isinstance(bake.envelope, str)
 			if bone_child and bake.envelope in bone_elements:
 				bone_elements[bake.envelope]["children"].append(DmeDag)
-				# Blender's bone transforms are inconsistent with object transforms:
-				# - A bone's matrix_local value is local to the armature, NOT the bone's parent
-				# - Bone parents are calculated from the head of the bone, NOT the tail (even though the tail defines the bone's location in pose mode!)
-				# The simplest way to arrive at the correct value relative to the tail is to perform a world space calculation, like so:
-				bone_parent_matrix_world = self.armature_src.matrix_world @ self.armature_src.data.bones[bake.envelope].matrix_local
-				trfm_mat = bone_parent_matrix_world.normalized().inverted() @ bake.src.matrix_world # normalise to remove armature scale
+				bone_parent_matrix_world = self.armature_src.matrix_world @ self.armature_src.data.bones[
+					bake.envelope].matrix_local
+				trfm_mat = bone_parent_matrix_world.normalized().inverted() @ bake.src.matrix_world
 
-				if not source2 and bake.src.type == 'META': # I have no idea why this is required. Metaballs are weird.
+				if not source2 and bake.src.type == 'META':
 					trfm_mat @= Matrix.Translation(self.armature_src.location)
 			else:
 				DmeModel_children.append(DmeDag)
 				trfm_mat = ob.matrix_world
 
-			trfm = makeTransform(bake.name, trfm_mat, "ob"+bake.name)
-						
+			trfm = makeTransform(bake.name, trfm_mat, "ob" + bake.name)
+
 			if want_jointtransforms: jointTransforms.append(trfm)
-			
+
 			DmeDag["transform"] = trfm
-			DmeModel_transforms.append(makeTransform(bake.name, trfm_mat, "ob_base"+bake.name))
-			
+			DmeModel_transforms.append(makeTransform(bake.name, trfm_mat, "ob_base" + bake.name))
+
 			jointCount = 0
 			weight_link_limit = 4 if source2 else 3
 			badJointCounts = 0
@@ -1571,34 +1578,41 @@ skeleton
 
 					if weight_link_limit:
 						if count > weight_link_limit and cull_threshold > 0:
-							vert_weights.sort(key=lambda link: link[1],reverse=True)
+							vert_weights.sort(key=lambda link: link[1], reverse=True)
 							while len(vert_weights) > weight_link_limit and vert_weights[-1][1] <= cull_threshold:
 								vert_weights.pop()
 								culled_weight_links += 1
 							count = len(vert_weights)
 						if count > weight_link_limit: badJointCounts += 1
 
-					jointCount = max(jointCount,count)
+					jointCount = max(jointCount, count)
 				if jointCount: have_weightmap = True
 			elif bake.envelope:
 				jointCount = 1
-					
+
 			if badJointCounts:
-				self.warning(get_id("exporter_warn_weightlinks_excess",True).format(badJointCounts,bake.src.name,weight_link_limit))
+				self.warning(get_id("exporter_warn_weightlinks_excess", True).format(badJointCounts, bake.src.name,
+																					 weight_link_limit))
 			if culled_weight_links:
-				self.warning(get_id("exporter_warn_weightlinks_culled",True).format(culled_weight_links,cull_threshold,bake.src.name))
+				self.warning(
+					get_id("exporter_warn_weightlinks_culled", True).format(culled_weight_links, cull_threshold,
+																			bake.src.name))
 
-			uv_layer = ob.data.uv_layers
+			uv_layers_list = ob.data.uv_layers
 
-			if len(uv_layer) > 1:
-				format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco1']],str)
-				multipleuvs = 1
-			else:
-				# format = vertex_data["vertexFormat"] = datamodel.make_array( [ keywords['pos'], keywords['norm'], keywords['texco']],str)
-				format = vertex_data["vertexFormat"] = datamodel.make_array([keywords['pos'], keywords['norm']], str)
-				multipleuvs = 0
+			texco_name_0 = keywords['texco']
+			texco_name_1 = keywords.get('texco1', texco_name_0 + "1")
 
-			# if have_weightmap: format.extend([keywords['weight'], keywords["weight_indices"]])
+			format_list = [keywords['pos'], keywords['norm']]
+
+			if not source2:
+				format_list.append(texco_name_0)
+				if len(uv_layers_list) > 1:
+					format_list.append(texco_name_1)
+
+			format = vertex_data["vertexFormat"] = datamodel.make_array(format_list, str)
+			multipleuvs = 1 if len(uv_layers_list) > 1 else 0
+
 
 			if cloth_groups:
 				for vgroup in cloth_groups:
@@ -1607,7 +1621,6 @@ skeleton
 			vertex_data["flipVCoordinates"] = True
 			vertex_data["jointCount"] = jointCount
 
-			
 			num_verts = len(ob.data.vertices)
 			num_loops = len(ob.data.loops)
 			pos = [None] * num_verts
@@ -1629,22 +1642,22 @@ skeleton
 
 			Indices = [None] * num_loops
 
-			uv_layer = ob.data.uv_layers.active.data
-			
-			bench.report("object setup")			
+			bench.report("object setup")
 
-			v=0
+			v = 0
 
-			def	remap(input, a, b, c, d):
+			def remap(input, a, b, c, d):
 				return (((input - a) * (d - c)) / (b - a)) + c
 
 			for vert in ob.data.vertices:
 				pos[vert.index] = datamodel.Vector3(vert.co)
 				vert.select = False
-				
+
 				if bake.shapes and bake.balance_vg:
-					try: balance[vert.index] = bake.balance_vg.weight(vert.index)
-					except: pass
+					try:
+						balance[vert.index] = bake.balance_vg.weight(vert.index)
+					except:
+						pass
 
 				if cloth_groups:
 					for vgroup in cloth_groups:
@@ -1672,11 +1685,11 @@ skeleton
 						indices[i] = vert_weights[i][0]
 						weights[i] = vert_weights[i][1]
 						total_weight += weights[i]
-						i+=1
+						i += 1
 
 					if source2 and total_weight == 0:
-						weights[0] = 1.0 # attach to the DmeModel itself, avoiding motion.
-					
+						weights[0] = 1.0  # attach to the DmeModel itself, avoiding motion.
+
 					jointWeights.extend(weights)
 					jointIndices.extend(indices)
 					v += 1
@@ -1685,12 +1698,20 @@ skeleton
 
 			bench.report("verts")
 
+			try:
+				ob.data.calc_tangents()
+			except:
+				pass
+
 			for loop in [ob.data.loops[i] for poly in ob.data.polygons for i in poly.loop_indices]:
-				texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layer[loop.index].uv))
-				if(multipleuvs == 1):
-					texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layer[1].uv))
+
 				norms[loop.index] = datamodel.Vector3(loop.normal)
-				Indices[loop.index] = loop.vertex_index					
+				Indices[loop.index] = loop.vertex_index
+
+				if not source2:
+					texcoIndices[loop.index] = texco.add(datamodel.Vector2(uv_layers_list[0].data[loop.index].uv))
+					if (multipleuvs == 1):
+						texcoIndices1[loop.index] = texco1.add(datamodel.Vector2(uv_layers_list[1].data[loop.index].uv))
 
 			bench.report("loops")
 
@@ -1700,54 +1721,57 @@ skeleton
 			bm.verts.ensure_lookup_table()
 			bm.faces.ensure_lookup_table()
 
-			vertex_data[keywords['pos']] = datamodel.make_array((v.co for v in bm.verts),datamodel.Vector3)
-			vertex_data[keywords['pos'] + "Indices"] = datamodel.make_array((l.vert.index for f in bm.faces for l in f.loops),int)
+			vertex_data[keywords['pos']] = datamodel.make_array((v.co for v in bm.verts), datamodel.Vector3)
+			vertex_data[keywords['pos'] + "Indices"] = datamodel.make_array(
+				(l.vert.index for f in bm.faces for l in f.loops), int)
 
-			# vertex_data[keywords['texco']] = datamodel.make_array(texco,datamodel.Vector2)
-			# vertex_data[keywords['texco'] + "Indices"] = datamodel.make_array(texcoIndices,int)
+			if not source2:
+				vertex_data[texco_name_0] = datamodel.make_array(texco, datamodel.Vector2)
+				vertex_data[texco_name_0 + "Indices"] = datamodel.make_array(texcoIndices, int)
 
-			if (multipleuvs == 1):
-				vertex_data[keywords['texco1']] = datamodel.make_array(texco1, datamodel.Vector2)
-				vertex_data[keywords['texco1'] + "Indices"] = datamodel.make_array(texcoIndices1, int)
+				if (multipleuvs == 1):
+					# FIX: Use safe variable name
+					vertex_data[texco_name_1] = datamodel.make_array(texco1, datamodel.Vector2)
+					vertex_data[texco_name_1 + "Indices"] = datamodel.make_array(texcoIndices1, int)
 
-			if source2: # write out arbitrary vertex data
+			if source2:  # write out arbitrary vertex data
 				loops = [loop for face in bm.faces for loop in face.loops]
 				loop_indices = datamodel.make_array([loop.index for loop in loops], int)
 				layerGroups = bm.loops.layers
 
 				class exportLayer:
-					name : str
-					
-					def __init__(self, layer, exportName = None): 
+					name: str
+
+					def __init__(self, layer, exportName=None):
 						self._layer = layer
 						self.name = exportName or layer.name
-						
+
 					def data_for(self, loop): return loop[self._layer]
-				
+
 				def get_bmesh_layers(layerGroup):
 					return [exportLayer(l) for l in layerGroup if re.match(r".*\$[0-9]+", l.name)]
 
-				defaultUvLayer = "texcoord$0"
-				uv_layers_to_export = list(get_bmesh_layers(layerGroups.uv))
-				if not defaultUvLayer in [l.name for l in uv_layers_to_export]: # select a default UV map
-					uv_render_layer = next((l.name for l in ob.data.uv_layers if l.active_render and not l in uv_layers_to_export), None)
-					if uv_render_layer:
-						uv_layers_to_export.append(exportLayer(layerGroups.uv[uv_render_layer], defaultUvLayer))
-						print("- Exporting '{}' as {}".format(uv_render_layer, defaultUvLayer))
-					else:
-						self.warning("'{}' does not contain a UV Map called {} and no suitable fallback map could be found. The model may be missing UV data.".format(bake.name, defaultUvLayer))
+				uv_layers_to_export = []
+				for i, layer in enumerate(layerGroups.uv):
+					export_name = "texcoord$" + str(i)
+					uv_layers_to_export.append(exportLayer(layer, export_name))
+
+					if layer.name != export_name:
+						print("- Exporting UV layer '{}' as '{}'".format(layer.name, export_name))
 
 				for layer in uv_layers_to_export:
 					uv_set = ordered_set.OrderedSet()
 					uv_indices = []
 					for uv in (layer.data_for(loop).uv for loop in loops):
 						uv_indices.append(uv_set.add(datamodel.Vector2(uv)))
-						
+
+					# Write the layer data using the assigned export name (texcoord$N)
 					vertex_data[layer.name] = datamodel.make_array(uv_set, datamodel.Vector2)
 					vertex_data[layer.name + "Indices"] = datamodel.make_array(uv_indices, int)
+					# Add the export name to the format list
 					format.append(layer.name)
 
-				def make_vertex_layer(layer : exportLayer, arrayType):
+				def make_vertex_layer(layer: exportLayer, arrayType):
 					vertex_data[layer.name] = datamodel.make_array([layer.data_for(loop) for loop in loops], arrayType)
 					vertex_data[layer.name + "Indices"] = loop_indices
 					format.append(layer.name)
@@ -1762,57 +1786,55 @@ skeleton
 					make_vertex_layer(layer, str)
 
 				bench.report("Source 2 vertex data")
-			
-			else:
-				format.append("textureCoordinates")
-				vertex_data["textureCoordinates"] = datamodel.make_array(texco,datamodel.Vector2)
-				vertex_data["textureCoordinatesIndices"] = datamodel.make_array(texcoIndices,int)
-								
+
 			if have_weightmap:
-				vertex_data[keywords["weight"]] = datamodel.make_array(jointWeights,float)
-				vertex_data[keywords["weight_indices"]] = datamodel.make_array(jointIndices,int)
-				format.extend( [ keywords['weight'], keywords["weight_indices"] ] )
+				vertex_data[keywords["weight"]] = datamodel.make_array(jointWeights, float)
+				vertex_data[keywords["weight_indices"]] = datamodel.make_array(jointIndices, int)
+				format.extend([keywords['weight'], keywords["weight_indices"]])
 
 			deform_layer = bm.verts.layers.deform.active
 			if deform_layer:
-				for cloth_enable in (group for group in ob.vertex_groups if re.match(r"cloth_enable\$[0-9]+", group.name)):
+				for cloth_enable in (group for group in ob.vertex_groups if
+									 re.match(r"cloth_enable\$[0-9]+", group.name)):
 					format.append(cloth_enable.name)
 					values = [v[deform_layer].get(cloth_enable.index, 0) for v in bm.verts]
 					valueSet = ordered_set.OrderedSet(values)
 					vertex_data[cloth_enable.name] = datamodel.make_array(valueSet, float)
-					vertex_data[cloth_enable.name + "Indices"] = datamodel.make_array((valueSet.index(values[i]) for i in Indices), int)
-			
+					vertex_data[cloth_enable.name + "Indices"] = datamodel.make_array(
+						(valueSet.index(values[i]) for i in Indices), int)
+
 			if bake.shapes and bake.balance_vg:
-				vertex_data[keywords["balance"]] = datamodel.make_array(balance,float)
-				vertex_data[keywords["balance"] + "Indices"] = datamodel.make_array(Indices,int)
+				vertex_data[keywords["balance"]] = datamodel.make_array(balance, float)
+				vertex_data[keywords["balance"] + "Indices"] = datamodel.make_array(Indices, int)
 				format.append(keywords["balance"])
-						
-			vertex_data[keywords['norm']] = datamodel.make_array(norms,datamodel.Vector3)
-			vertex_data[keywords['norm'] + "Indices"] = datamodel.make_array(range(len(norms)),int)
+
+			vertex_data[keywords['norm']] = datamodel.make_array(norms, datamodel.Vector3)
+			vertex_data[keywords['norm'] + "Indices"] = datamodel.make_array(range(len(norms)), int)
 
 			if cloth_groups:
 				for keyword in cloth_weights:
-					vertex_data[keyword + "$0"] = datamodel.make_array(cloth_weights[keyword],float)
-					vertex_data[keyword + "$0Indices"] = datamodel.make_array(Indices,int)
+					vertex_data[keyword + "$0"] = datamodel.make_array(cloth_weights[keyword], float)
+					vertex_data[keyword + "$0Indices"] = datamodel.make_array(Indices, int)
 
 			bench.report("insert")
 
-			# Hammer data
-			for map_name in vertex_maps:
-				attribute_name = keywords.get(map_name)
-				vert_map = ob.data.vertex_colors.get(map_name)
+			if not source2:
+				# Hammer data
+				for map_name in vertex_maps:
+					attribute_name = keywords.get(map_name)
+					vert_map = ob.data.vertex_colors.get(map_name)
 
-				if not attribute_name or not vert_map:
-					continue
+					if not attribute_name or not vert_map:
+						continue
 
-				colours = []
-				for loopColour in vert_map.data:
-					colour = list(loopColour.color)
-					colours.append(datamodel.Vector4(colour))
+					colours = []
+					for loopColour in vert_map.data:
+						colour = list(loopColour.color)
+						colours.append(datamodel.Vector4(colour))
 
-				vertex_data[attribute_name] = datamodel.make_array(colours,datamodel.Vector4)
-				vertex_data[attribute_name + "Indices"] = datamodel.make_array(range(len(colours)),int)
-				format.append(attribute_name)
+					vertex_data[attribute_name] = datamodel.make_array(colours, datamodel.Vector4)
+					vertex_data[attribute_name + "Indices"] = datamodel.make_array(range(len(colours)), int)
+					format.append(attribute_name)
 
 			bad_face_mats = 0
 			v = 0
@@ -1820,35 +1842,36 @@ skeleton
 			num_polys = len(bm.faces)
 
 			two_percent = int(num_polys / 50)
-			print("Polygons: ",debug_only=True,newline=False)
+			print("Polygons: ", debug_only=True, newline=False)
 
 			bm_face_sets = collections.defaultdict(list)
 			for face in bm.faces:
 				mat_name, mat_success = self.GetMaterialName(ob, face.material_index)
 				if not mat_success:
 					bad_face_mats += 1
-				bm_face_sets[mat_name].extend((*(l.index for l in face.loops),-1))
-				
-				p+=1
+				bm_face_sets[mat_name].extend((*(l.index for l in face.loops), -1))
+
+				p += 1
 				if two_percent and p % two_percent == 0:
 					print(".", debug_only=True, newline=False)
 					bpy.context.window_manager.progress_update(p / num_polys)
 
-			for (mat_name,indices) in bm_face_sets.items():
+			for (mat_name, indices) in bm_face_sets.items():
 				material_elem = materials.get(mat_name)
 				if not material_elem:
-					materials[mat_name] = material_elem = dm.add_element(mat_name,"DmeMaterial",id=mat_name + "mat")
-					material_elem["mtlName"] = os.path.join(bpy.context.scene.vs.material_path, mat_name).replace('\\','/')
-					
-				face_set = dm.add_element(mat_name,"DmeFaceSet",id=bake.name+mat_name+"faces")
+					materials[mat_name] = material_elem = dm.add_element(mat_name, "DmeMaterial", id=mat_name + "mat")
+					material_elem["mtlName"] = os.path.join(bpy.context.scene.vs.material_path, mat_name).replace('\\',
+																												  '/')
+
+				face_set = dm.add_element(mat_name, "DmeFaceSet", id=bake.name + mat_name + "faces")
 				face_sets[mat_name] = face_set
 
 				face_set["material"] = material_elem
-				face_set["faces"] = datamodel.make_array(indices,int)
+				face_set["faces"] = datamodel.make_array(indices, int)
 
 			print(debug_only=True)
-			DmeMesh["faceSets"] = datamodel.make_array(list(face_sets.values()),datamodel.Element)
-			
+			DmeMesh["faceSets"] = datamodel.make_array(list(face_sets.values()), datamodel.Element)
+
 			if bad_face_mats:
 				self.warning(get_id("exporter_err_facesnotex_ormat").format(bad_face_mats, bake.name))
 			bench.report("polys")
@@ -1857,7 +1880,7 @@ skeleton
 			del bm
 
 			two_percent = int(len(bake.shapes) / 50)
-			print("Shapes: ",debug_only=True,newline=False)
+			print("Shapes: ", debug_only=True, newline=False)
 			delta_states = []
 			corrective_shapes_seen = []
 			if bake.shapes:
@@ -1865,28 +1888,34 @@ skeleton
 				num_shapes = len(bake.shapes)
 				num_correctives = 0
 				num_wrinkles = 0
-				
-				for shape_name,shape in bake.shapes.items():
+
+				for shape_name, shape in bake.shapes.items():
 					shape_names.append(shape_name)
 					wrinkle_scale = 0
 					corrective = getCorrectiveShapeSeparator() in shape_name
 					if corrective:
 						# drivers always override shape name to avoid name truncation issues
-						corrective_targets_driver = ordered_set.OrderedSet(flex.getCorrectiveShapeKeyDrivers(bake.src.data.shape_keys.key_blocks[shape_name]) or [])
-						corrective_targets_name = ordered_set.OrderedSet(shape_name.split(getCorrectiveShapeSeparator()))
+						corrective_targets_driver = ordered_set.OrderedSet(
+							flex.getCorrectiveShapeKeyDrivers(bake.src.data.shape_keys.key_blocks[shape_name]) or [])
+						corrective_targets_name = ordered_set.OrderedSet(
+							shape_name.split(getCorrectiveShapeSeparator()))
 						corrective_targets = corrective_targets_driver or corrective_targets_name
 						corrective_targets.source = shape_name
 
-						if(corrective_targets in corrective_shapes_seen):
+						if (corrective_targets in corrective_shapes_seen):
 							previous_shape = next(x for x in corrective_shapes_seen if x == corrective_targets)
-							self.warning(get_id("exporter_warn_correctiveshape_duplicate", True).format(shape_name, "+".join(corrective_targets), previous_shape.source))
+							self.warning(get_id("exporter_warn_correctiveshape_duplicate", True).format(shape_name,
+																										"+".join(
+																											corrective_targets),
+																										previous_shape.source))
 							continue
 						else:
 							corrective_shapes_seen.append(corrective_targets)
-						
+
 						if corrective_targets_driver and corrective_targets_driver != corrective_targets_name:
 							generated_shape_name = getCorrectiveShapeSeparator().join(corrective_targets_driver)
-							print("- Renamed shape key '{}' to '{}' to match its corrective shape drivers.".format(shape_name, generated_shape_name))
+							print("- Renamed shape key '{}' to '{}' to match its corrective shape drivers.".format(
+								shape_name, generated_shape_name))
 							shape_name = generated_shape_name
 						num_correctives += 1
 					else:
@@ -1898,24 +1927,26 @@ skeleton
 											scales = control.get("wrinkleScales")
 											return scales[i] if scales else 0
 								raise ValueError()
+
 							try:
 								wrinkle_scale = _FindScale()
 							except ValueError:
 								self.warning(get_id("exporter_err_flexctrl_missing", True).format(shape_name))
 							pass
-					
+
 					shape_names.append(shape_name)
-					DmeVertexDeltaData = dm.add_element(shape_name,"DmeVertexDeltaData",id=ob.name+shape_name)
+					DmeVertexDeltaData = dm.add_element(shape_name, "DmeVertexDeltaData", id=ob.name + shape_name)
 					delta_states.append(DmeVertexDeltaData)
 
-					vertexFormat = DmeVertexDeltaData["vertexFormat"] = datamodel.make_array([ keywords['pos'], keywords['norm'] ],str)
-					
+					vertexFormat = DmeVertexDeltaData["vertexFormat"] = datamodel.make_array(
+						[keywords['pos'], keywords['norm']], str)
+
 					wrinkle = []
 					wrinkleIndices = []
 
 					# what do these do?
-					#DmeVertexDeltaData["flipVCoordinates"] = False
-					#DmeVertexDeltaData["corrected"] = True
+					# DmeVertexDeltaData["flipVCoordinates"] = False
+					# DmeVertexDeltaData["corrected"] = True
 
 					shape_pos = []
 					shape_posIndices = []
@@ -1925,7 +1956,7 @@ skeleton
 					if cache_deltas:
 						delta_lengths = [None] * len(ob.data.vertices)
 						max_delta = 0
-					
+
 					for ob_vert in ob.data.vertices:
 						shape_vert = shape.vertices[ob_vert.index]
 
@@ -1946,12 +1977,15 @@ skeleton
 							if corrective_target:
 								corrective_target_shapes.append(corrective_target)
 							else:
-								self.warning(get_id("exporter_err_missing_corrective_target", format_string=True).format(shape_name, corrective_shape_name))
+								self.warning(
+									get_id("exporter_err_missing_corrective_target", format_string=True).format(
+										shape_name, corrective_shape_name))
 								continue
 
 							# We need the absolute normals as generated by Blender
 							for shape_vert in shape.vertices:
-								shape_vert.co -= ob.data.vertices[shape_vert.index].co - corrective_target.vertices[shape_vert.index].co
+								shape_vert.co -= ob.data.vertices[shape_vert.index].co - corrective_target.vertices[
+									shape_vert.index].co
 
 					for ob_loop in ob.data.loops:
 						shape_loop = shape.loops[ob_loop.index]
@@ -1972,7 +2006,7 @@ skeleton
 						if wrinkle_scale:
 							delta_len = delta_lengths[ob_loop.vertex_index]
 							if delta_len:
-								max_delta = max(max_delta,delta_len)
+								max_delta = max(max_delta, delta_len)
 								wrinkle.append(delta_len)
 								wrinkleIndices.append(texcoIndices[ob_loop.index])
 
@@ -1984,40 +2018,42 @@ skeleton
 							for i in range(len(wrinkle)):
 								wrinkle[i] *= wrinkle_mod
 
-					DmeVertexDeltaData[keywords['pos']] = datamodel.make_array(shape_pos,datamodel.Vector3)
-					DmeVertexDeltaData[keywords['pos'] + "Indices"] = datamodel.make_array(shape_posIndices,int)
-					DmeVertexDeltaData[keywords['norm']] = datamodel.make_array(shape_norms,datamodel.Vector3)
-					DmeVertexDeltaData[keywords['norm'] + "Indices"] = datamodel.make_array(shape_normIndices,int)
+					DmeVertexDeltaData[keywords['pos']] = datamodel.make_array(shape_pos, datamodel.Vector3)
+					DmeVertexDeltaData[keywords['pos'] + "Indices"] = datamodel.make_array(shape_posIndices, int)
+					DmeVertexDeltaData[keywords['norm']] = datamodel.make_array(shape_norms, datamodel.Vector3)
+					DmeVertexDeltaData[keywords['norm'] + "Indices"] = datamodel.make_array(shape_normIndices, int)
 
 					if wrinkle_scale:
 						vertexFormat.append(keywords["wrinkle"])
 						num_wrinkles += 1
-						DmeVertexDeltaData[keywords["wrinkle"]] = datamodel.make_array(wrinkle,float)
-						DmeVertexDeltaData[keywords["wrinkle"] + "Indices"] = datamodel.make_array(wrinkleIndices,int)
-										
+						DmeVertexDeltaData[keywords["wrinkle"]] = datamodel.make_array(wrinkle, float)
+						DmeVertexDeltaData[keywords["wrinkle"] + "Indices"] = datamodel.make_array(wrinkleIndices, int)
+
 					bpy.context.window_manager.progress_update(len(shape_names) / num_shapes)
 					if two_percent and len(shape_names) % two_percent == 0:
-						print(".",debug_only=True,newline=False)
+						print(".", debug_only=True, newline=False)
 
 				if bpy.app.debug_value <= 1:
-					for shape in bake.shapes.values():					
+					for shape in bake.shapes.values():
 						bpy.data.meshes.remove(shape)
 						del shape
 					bake.shapes.clear()
 
 				print(debug_only=True)
 				bench.report("shapes")
-				print("- {} flexes ({} with wrinklemaps) + {} correctives".format(num_shapes - num_correctives,num_wrinkles,num_correctives))
-			
+				print("- {} flexes ({} with wrinklemaps) + {} correctives".format(num_shapes - num_correctives,
+																				  num_wrinkles, num_correctives))
+
 			vca_matrix = ob.matrix_world.inverted()
-			for vca_name,vca in bake_results[0].vertex_animations.items():
+			for vca_name, vca in bake_results[0].vertex_animations.items():
 				frame_shapes = []
 
 				for i, vca_ob in enumerate(vca):
-					DmeVertexDeltaData = dm.add_element("{}-{}".format(vca_name,i),"DmeVertexDeltaData",id=ob.name+vca_name+str(i))
+					DmeVertexDeltaData = dm.add_element("{}-{}".format(vca_name, i), "DmeVertexDeltaData",
+														id=ob.name + vca_name + str(i))
 					delta_states.append(DmeVertexDeltaData)
 					frame_shapes.append(DmeVertexDeltaData)
-					DmeVertexDeltaData["vertexFormat"] = datamodel.make_array([ "positions", "normals" ],str)
+					DmeVertexDeltaData["vertexFormat"] = datamodel.make_array(["positions", "normals"], str)
 
 					shape_pos = []
 					shape_posIndices = []
@@ -2035,23 +2071,23 @@ skeleton
 							if abs(delta.length) > 1e-5:
 								shape_pos.append(datamodel.Vector3(delta))
 								shape_posIndices.append(ob_vert.index)
-						
+
 						norm = Vector(shape_loop.normal)
 						norm.rotate(vca_matrix)
 						if abs(1.0 - norm.dot(ob_loop.normal)) > epsilon[0]:
 							shape_norms.append(datamodel.Vector3(norm - ob_loop.normal))
 							shape_normIndices.append(shape_loop.index)
 
-					DmeVertexDeltaData["positions"] = datamodel.make_array(shape_pos,datamodel.Vector3)
-					DmeVertexDeltaData["positionsIndices"] = datamodel.make_array(shape_posIndices,int)
-					DmeVertexDeltaData["normals"] = datamodel.make_array(shape_norms,datamodel.Vector3)
-					DmeVertexDeltaData["normalsIndices"] = datamodel.make_array(shape_normIndices,int)
+					DmeVertexDeltaData["positions"] = datamodel.make_array(shape_pos, datamodel.Vector3)
+					DmeVertexDeltaData["positionsIndices"] = datamodel.make_array(shape_posIndices, int)
+					DmeVertexDeltaData["normals"] = datamodel.make_array(shape_norms, datamodel.Vector3)
+					DmeVertexDeltaData["normalsIndices"] = datamodel.make_array(shape_normIndices, int)
 
 					removeObject(vca_ob)
 					vca[i] = None
 
-				if vca.export_sequence: # generate and export a skeletal animation that drives the vertex animation
-					vca_arm = bpy.data.objects.new("vca_arm",bpy.data.armatures.new("vca_arm"))
+				if vca.export_sequence:
+					vca_arm = bpy.data.objects.new("vca_arm", bpy.data.armatures.new("vca_arm"))
 					bpy.context.scene.collection.objects.link(vca_arm)
 					bpy.context.view_layer.objects.active = vca_arm
 
@@ -2059,7 +2095,7 @@ skeleton
 					vca_bone_name = "vcabone_" + vca_name
 					vca_bone = vca_arm.data.edit_bones.new(vca_bone_name)
 					vca_bone.tail.y = 1
-					
+
 					bpy.context.scene.frame_set(0)
 					mat = getUpAxisMat('y').inverted()
 					# DMX animations don't handle missing root bones or meshes, so create bones to represent them
@@ -2073,57 +2109,56 @@ skeleton
 							bake_mat = mat @ bake.object.matrix_world
 							b = vca_arm.data.edit_bones.new(bake.name)
 							b.head = bake_mat @ b.head
-							b.tail = bake_mat @ Vector([0,1,0])
+							b.tail = bake_mat @ Vector([0, 1, 0])
 
 					bpy.ops.object.mode_set(mode='POSE')
-					ops.pose.armature_apply() # refreshes the armature's internal state, required!
+					ops.pose.armature_apply()
 					action = vca_arm.animation_data_create().action = bpy.data.actions.new("vcaanim_" + vca_name)
 					for i in range(2):
-						fc = action.fcurves.new('pose.bones["{}"].location'.format(vca_bone_name),index=i)
+						fc = action.fcurves.new('pose.bones["{}"].location'.format(vca_bone_name), index=i)
 						fc.keyframe_points.add(count=2)
 						for key in fc.keyframe_points: key.interpolation = 'LINEAR'
-						if i == 0: fc.keyframe_points[0].co = (0,1.0)
-						fc.keyframe_points[1].co = (vca.num_frames,1.0)
+						if i == 0: fc.keyframe_points[0].co = (0, 1.0)
+						fc.keyframe_points[1].co = (vca.num_frames, 1.0)
 						fc.update()
 
-					# finally, write it out
-					self.exportId(bpy.context,vca_arm)
+					self.exportId(bpy.context, vca_arm)
 					written += 1
 
 			if delta_states:
-				DmeMesh["deltaStates"] = datamodel.make_array(delta_states,datamodel.Element)
+				DmeMesh["deltaStates"] = datamodel.make_array(delta_states, datamodel.Element)
 				DmeMesh["deltaStateWeights"] = DmeMesh["deltaStateWeightsLagged"] = \
-					datamodel.make_array([datamodel.Vector2([0.0,0.0])] * len(delta_states),datamodel.Vector2)
+					datamodel.make_array([datamodel.Vector2([0.0, 0.0])] * len(delta_states), datamodel.Vector2)
 
 				targets = DmeCombinationOperator["targets"]
 				added = False
 				for elem in targets:
 					if elem.type == "DmeFlexRules":
-						if elem["deltaStates"][0].name in shape_names: # can't have the same delta name on multiple objects
+						if elem["deltaStates"][0].name in shape_names:  # can't have the same delta name on multiple objects
 							elem["target"] = DmeMesh
 							added = True
 				if not added:
 					targets.append(DmeMesh)
 
-		if len(bake_results) == 1 and bake_results[0].object.type == 'ARMATURE': # animation
+		if len(bake_results) == 1 and bake_results[0].object.type == 'ARMATURE':  # animation
 			ad = self.armature.animation_data
-						
+
 			anim_len = animationLength(ad) if ad else 0
 			if anim_len == 0:
-				self.warning(get_id("exporter_err_noframes",True).format(self.armature_src.name))
-			
-			if ad.action and hasattr(ad.action,'fps'):
+				self.warning(get_id("exporter_err_noframes", True).format(self.armature_src.name))
+
+			if ad.action and hasattr(ad.action, 'fps'):
 				fps = bpy.context.scene.render.fps = ad.action.fps
 				bpy.context.scene.render.fps_base = 1
 			else:
 				fps = bpy.context.scene.render.fps * bpy.context.scene.render.fps_base
-			
-			DmeChannelsClip = dm.add_element(name,"DmeChannelsClip",id=name+"clip")		
-			DmeAnimationList = dm.add_element(armature_name,"DmeAnimationList",id=armature_name+"list")
-			DmeAnimationList["animations"] = datamodel.make_array([DmeChannelsClip],datamodel.Element)
+
+			DmeChannelsClip = dm.add_element(name, "DmeChannelsClip", id=name + "clip")
+			DmeAnimationList = dm.add_element(armature_name, "DmeAnimationList", id=armature_name + "list")
+			DmeAnimationList["animations"] = datamodel.make_array([DmeChannelsClip], datamodel.Element)
 			root["animationList"] = DmeAnimationList
-			
-			DmeTimeFrame = dm.add_element("timeframe","DmeTimeFrame",id=name+"time")
+
+			DmeTimeFrame = dm.add_element("timeframe", "DmeTimeFrame", id=name + "time")
 			duration = anim_len / fps
 			if dm.format_ver >= 11:
 				DmeTimeFrame["duration"] = datamodel.Time(duration)
@@ -2132,51 +2167,53 @@ skeleton
 			DmeTimeFrame["scale"] = 1.0
 			DmeChannelsClip["timeFrame"] = DmeTimeFrame
 			DmeChannelsClip["frameRate"] = fps if source2 else int(fps)
-			
-			channels = DmeChannelsClip["channels"] = datamodel.make_array([],datamodel.Element)
+
+			channels = DmeChannelsClip["channels"] = datamodel.make_array([], datamodel.Element)
 			bone_channels = {}
 			flex_channels = {}
+
 			def makeChannel(bone):
 				bone_channels[bone.name] = []
 				channel_template = [
-					[ "_p", "position", "Vector3", datamodel.Vector3 ],
-					[ "_o", "orientation", "Quaternion", datamodel.Quaternion ]
+					["_p", "position", "Vector3", datamodel.Vector3],
+					["_o", "orientation", "Quaternion", datamodel.Quaternion]
 				]
 
 				if bpy.context.scene.vs.export_keyframe_scale:
-					channel_template.append([ "_s", "scale", "Float", float ])
+					channel_template.append(["_s", "scale", "Float", float])
 
 				for template in channel_template:
-					cur = dm.add_element(bone.name + template[0],"DmeChannel",id=bone.name+template[0])
+					cur = dm.add_element(bone.name + template[0], "DmeChannel", id=bone.name + template[0])
 					cur["toAttribute"] = template[1]
 					cur["toElement"] = (bone_elements[bone.name] if bone else DmeModel)["transform"]
-					cur["mode"] = 1				
-					val_arr = dm.add_element(template[2]+" log","Dme"+template[2]+"LogLayer",cur.name+"loglayer")				
-					cur["log"] = dm.add_element(template[2]+" log","Dme"+template[2]+"Log",cur.name+"log")
-					cur["log"]["layers"] = datamodel.make_array([val_arr],datamodel.Element)				
-					val_arr["times"] = datamodel.make_array([],datamodel.Time if dm.format_ver > 11 else int)
-					val_arr["values"] = datamodel.make_array([],template[3])
+					cur["mode"] = 1
+					val_arr = dm.add_element(template[2] + " log", "Dme" + template[2] + "LogLayer",
+											 cur.name + "loglayer")
+					cur["log"] = dm.add_element(template[2] + " log", "Dme" + template[2] + "Log", cur.name + "log")
+					cur["log"]["layers"] = datamodel.make_array([val_arr], datamodel.Element)
+					val_arr["times"] = datamodel.make_array([], datamodel.Time if dm.format_ver > 11 else int)
+					val_arr["values"] = datamodel.make_array([], template[3])
 					if template[1] == "scale":
 						cur["toIndex"] = 0
 						cur["fromIndex"] = 0
 					if bone: bone_channels[bone.name].append(val_arr)
 					channels.append(cur)
-			
+
 			for bone in self.exportable_bones:
 				makeChannel(bone)
 
 			def makeFlexChannel(flex_name):
-				cur = dm.add_element(flex_name + "_flex_channel","DmeChannel",id = flex_name + "_flex_channel")
+				cur = dm.add_element(flex_name + "_flex_channel", "DmeChannel", id=flex_name + "_flex_channel")
 				cur["fromIndex"] = 0
 				cur["toAttribute"] = "flexWeight"
-				cur["toElement"] = dm.add_element(flex_name,"DmElement",id=flex_name )
+				cur["toElement"] = dm.add_element(flex_name, "DmElement", id=flex_name)
 				cur["toElement"]["flexWeight"] = 0.0
 				cur["toIndex"] = 0
-				cur["mode"] = 3 # unknown, but SFM exports it like this
-				val_arr = dm.add_element("float log","DmeFloatLogLayer",cur.name+"loglayer")
-				cur["log"] = dm.add_element("float log","DmeFloatLog",cur.name+"log")
-				cur["log"]["layers"] = datamodel.make_array([val_arr],datamodel.Element)
-				val_arr["times"] = datamodel.make_array([],datamodel.Time if dm.format_ver > 11 else int)
+				cur["mode"] = 3  # unknown, but SFM exports it like this
+				val_arr = dm.add_element("float log", "DmeFloatLogLayer", cur.name + "loglayer")
+				cur["log"] = dm.add_element("float log", "DmeFloatLog", cur.name + "log")
+				cur["log"]["layers"] = datamodel.make_array([val_arr], datamodel.Element)
+				val_arr["times"] = datamodel.make_array([], datamodel.Time if dm.format_ver > 11 else int)
 				val_arr["values"] = datamodel.make_array([], float)
 				flex_channels[flex_name] = val_arr
 				channels.append(cur)
@@ -2184,7 +2221,6 @@ skeleton
 			if bpy.context.scene.vs.export_keyframe_flex:
 				for shape_name in bake_results[0].shape_keys:
 					makeFlexChannel(shape_name)
-
 
 			num_frames = int(anim_len + 1)
 			bench.report("Animation setup")
@@ -2201,11 +2237,11 @@ skeleton
 				make_scale = False
 
 			two_percent = num_frames / 50
-			print("Frames: ",debug_only=True,newline=False)
-			for frame in range(0,num_frames):
-				bpy.context.window_manager.progress_update(frame/num_frames)
+			print("Frames: ", debug_only=True, newline=False)
+			for frame in range(0, num_frames):
+				bpy.context.window_manager.progress_update(frame / num_frames)
 				bpy.context.scene.frame_set(frame)
-				keyframe_time = datamodel.Time(frame / fps) if dm.format_ver > 11 else int(frame/fps * 10000)
+				keyframe_time = datamodel.Time(frame / fps) if dm.format_ver > 11 else int(frame / fps * 10000)
 				evaluated_bones = self.getEvaluatedPoseBones()
 				for bone in evaluated_bones:
 					channel = bone_channels[bone.name]
@@ -2229,7 +2265,7 @@ skeleton
 					pos = relMat.to_translation()
 					if bone.parent:
 						for j in range(3): pos[j] *= armature_scale[j]
-					
+
 					rot = relMat.to_quaternion()
 					rot_vec = Vector(rot.to_euler())
 
@@ -2248,7 +2284,6 @@ skeleton
 					else:
 						skipped_pos[bone] = keyframe_time
 
-					
 					if not prev_rot.get(bone) or rot_vec - prev_rot[bone] > epsilon:
 						skip_time = skipped_rot.get(bone)
 						if skip_time != None:
@@ -2286,22 +2321,24 @@ skeleton
 						channel["values"].append(key.value)
 
 				if two_percent and frame % two_percent:
-					print(".",debug_only=True,newline=False)
+					print(".", debug_only=True, newline=False)
 			print(debug_only=True)
-		
+
+		ob.data.free_tangents()
+
 		bpy.context.window_manager.progress_update(0.99)
 		print("- Writing DMX...")
 		try:
 			if bpy.context.scene.vs.use_kv2:
-				dm.write(filepath,"keyvalues2",1)
+				dm.write(filepath, "keyvalues2", 1)
 			else:
-				dm.write(filepath,"binary",State.datamodelEncoding)
+				dm.write(filepath, "binary", State.datamodelEncoding)
 			written += 1
 		except (PermissionError, FileNotFoundError) as err:
-			self.error(get_id("exporter_err_open", True).format("DMX",err))
+			self.error(get_id("exporter_err_open", True).format("DMX", err))
 
 		bench.report("write")
 		if bench.quiet:
-			print("- DMX export took",bench.total(),"\n")
-		
+			print("- DMX export took", bench.total(), "\n")
+
 		return written

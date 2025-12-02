@@ -19,15 +19,15 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-	"name": "Blender Source Tools",
-	"author": "Tom Edwards (translators: Grigory Revzin), FellOffFuji (4.1 version of MoonDed/Kaa992's Source 2 Tools)",
-	"version": (3, 3, 1),
-	"blender": (4, 1, 0),
+	"name": "Blender Source 2 Tools",
+	"author": "Tom Edwards (translators: Grigory Revzin), FellOffFuji (4.4 version of MoonDed/Kaa992's Source 2 Tools)",
+	"version": (3, 3, 1, "2e"),
+	"blender": (4, 4, 0),
 	"category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
 	"wiki_url": "http://steamcommunity.com/groups/BlenderSourceTools",
 	"tracker_url": "http://steamcommunity.com/groups/BlenderSourceTools/discussions/0/",
-	"description": "Importer and exporter for Valve Software's Source Engine. Supports SMD\VTA, DMX and QC."
+	"description": "Importer and exporter for Valve Software's Source 2 Engine. Supports SMD\VTA, DMX and QC."
 }
 
 import bpy, os
@@ -46,7 +46,7 @@ for collection in [bpy.app.handlers.depsgraph_update_post, bpy.app.handlers.load
 		if func.__module__.startswith(__name__):
 			collection.remove(func)
 
-from . import datamodel, import_smd, export_smd, flex, GUI, update
+from . import datamodel, import_smd, import_vmdl, export_smd, flex, GUI, update
 from .utils import *
 
 class ValveSource_Exportable(bpy.types.PropertyGroup):
@@ -63,6 +63,9 @@ class ValveSource_Exportable(bpy.types.PropertyGroup):
 
 def menu_func_import(self, context):
 	self.layout.operator(import_smd.SmdImporter.bl_idname, text=get_id("import_menuitem", True))
+
+def menu_func_import_camera(self, context):
+	self.layout.operator(import_vmdl.VmdlAttachmentImporter.bl_idname, text=get_id("import_menuitem_camera", True))
 
 def menu_func_export(self, context):
 	self.layout.menu("SMD_MT_ExportChoice", text=get_id("export_menuitem"))
@@ -223,6 +226,9 @@ _classes = (
 	GUI.SMD_PT_FloatMaps,
 	GUI.SMD_OT_AddVertexMapRemap,
 	GUI.SMD_PT_Scene_QC_Complie,
+	GUI.VMDL_OT_CorrectOrientation,
+	GUI.VMDL_OT_CopyToClipboard,
+	GUI.VMDL_PT_Attachments_Tools,
 	flex.DmxWriteFlexControllers,
 	flex.AddCorrectiveShapeDrivers,
 	flex.RenameShapesToMatchCorrectiveDrivers,
@@ -232,7 +238,8 @@ _classes = (
 	update.SMD_MT_Updated,
 	export_smd.SMD_OT_Compile, 
 	export_smd.SmdExporter, 
-	import_smd.SmdImporter)
+	import_smd.SmdImporter,
+	import_vmdl.VmdlAttachmentImporter)
 
 def register():
 	for cls in _classes:
@@ -242,6 +249,7 @@ def register():
 	bpy.app.translations.register(__name__,translations.translations)
 	
 	bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+	bpy.types.TOPBAR_MT_file_import.append(menu_func_import_camera)
 	bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 	bpy.types.MESH_MT_shape_key_context_menu.append(menu_func_shapekeys)
 	bpy.types.TEXT_MT_edit.append(menu_func_textedit)
@@ -261,12 +269,19 @@ def register():
 	bpy.types.Curve.vs = make_pointer(ValveSource_CurveProps)
 	bpy.types.Text.vs = make_pointer(ValveSource_TextProps)
 
+	bpy.types.Scene.vmdl_export_camera = bpy.props.BoolProperty(
+		name="Include Attachment Camera Previews",
+		description="Include Attachment Camera Preview node (with default values) in copied KV3 data.",
+		default=False
+	)
+
 	State.hook_events()
 
 def unregister():
 	State.unhook_events()
 
 	bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+	bpy.types.TOPBAR_MT_file_import.append(menu_func_import_camera)
 	bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 	bpy.types.MESH_MT_shape_key_context_menu.remove(menu_func_shapekeys)
 	bpy.types.TEXT_MT_edit.remove(menu_func_textedit)

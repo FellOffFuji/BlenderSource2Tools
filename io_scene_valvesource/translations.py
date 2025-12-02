@@ -242,6 +242,12 @@ _data = {
 	'en': "Source Engine Export",
 	'ru': "Экспорт в Source",
 },
+'copy_to_clipboard': {
+	'en': "Copy Nodes to Clipboard",
+},
+'correct_orientation': {
+	'en': "Copy Nodes to Clipboard",
+},
 'exportables_flex_src': {
 	'ja': "コントローラーのソースファイル ",
 	'en': "Controller Source",
@@ -369,6 +375,9 @@ _data = {
 'import_menuitem': {
 	'en': "Source Engine (.smd, .vta, .dmx, .qc)",
 	'ru': "Движок Source (.smd, .vta, .dmx, .qc)",
+},
+'import_menuitem_camera': {
+	'en': "Source 2 Deadlock Camera Attachments (.vmdl)",
 },
 'exporter_err_nogroupitems': {
 	'en': "Nothing in Group \"{0}\" is enabled for export",
@@ -609,10 +618,16 @@ _data = {
 	'en': "Imports uncompiled Source Engine model data",
 	'ru': "Импортирует промежуточные файлы Source",
 },
+'importer_tip_camera': {
+	'en': "Imports uncompiled Source 2 Engine camera attachments",
+},
 'importer_title': {
 	'ja': "インポート SMD/VTA, DMX, QC",
 	'en': "Import SMD/VTA, DMX, QC",
 	'ru': "Импорт SMD/VTA, DMX, QC",
+},
+'importer_title_camera': {
+	'en': "Import VMDL",
 },
 'importer_makecamera': {
 	'ja': "$originにカメラを生成",
