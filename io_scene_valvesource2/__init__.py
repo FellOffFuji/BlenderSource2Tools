@@ -21,7 +21,7 @@
 bl_info = {
 	"name": "Blender Source 2 Tools",
 	"author": "Tom Edwards (translators: Grigory Revzin), FellOffFuji (4.4 version of MoonDed/Kaa992's Source 2 Tools)",
-	"version": (3, 3, 1, "2e"),
+	"version": (3, 3, 1, "2f"),
 	"blender": (4, 4, 0),
 	"category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",

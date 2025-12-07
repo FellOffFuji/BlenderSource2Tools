@@ -1359,6 +1359,7 @@ skeleton
 		armature_name = self.armature_src.name if self.armature_src else name
 		materials = {}
 		written = 0
+		ob = None
 
 		def makeTransform(name, matrix, object_name):
 			trfm = dm.add_element(name, "DmeTransform", id=object_name + "transform")
@@ -1748,42 +1749,69 @@ skeleton
 
 					def data_for(self, loop): return loop[self._layer]
 
-				def get_bmesh_layers(layerGroup):
-					return [exportLayer(l) for l in layerGroup if re.match(r".*\$[0-9]+", l.name)]
+				def srgb_to_linear(color):
+					out = []
+					for i in range(3):
+						c = color[i]
+						if c <= 0.04045:
+							out.append(c / 12.92)
+						else:
+							out.append(((c + 0.055) / 1.055) ** 2.4)
+					out.append(color[3] if len(color) > 3 else 1.0)
+					return datamodel.Vector4(out)
 
+				def make_vertex_layer(layer: exportLayer, arrayType, transform_func=None):
+					raw_data = [layer.data_for(loop) for loop in loops]
+					if transform_func:
+						final_data = [transform_func(d) for d in raw_data]
+					else:
+						final_data = raw_data
+
+					vertex_data[layer.name] = datamodel.make_array(final_data, arrayType)
+					vertex_data[layer.name + "Indices"] = loop_indices
+					format.append(layer.name)
+
+				# Export UVs (Auto-rename to texcoord$N)
 				uv_layers_to_export = []
 				for i, layer in enumerate(layerGroups.uv):
 					export_name = "texcoord$" + str(i)
 					uv_layers_to_export.append(exportLayer(layer, export_name))
-
-					if layer.name != export_name:
-						print("- Exporting UV layer '{}' as '{}'".format(layer.name, export_name))
 
 				for layer in uv_layers_to_export:
 					uv_set = ordered_set.OrderedSet()
 					uv_indices = []
 					for uv in (layer.data_for(loop).uv for loop in loops):
 						uv_indices.append(uv_set.add(datamodel.Vector2(uv)))
-
-					# Write the layer data using the assigned export name (texcoord$N)
 					vertex_data[layer.name] = datamodel.make_array(uv_set, datamodel.Vector2)
 					vertex_data[layer.name + "Indices"] = datamodel.make_array(uv_indices, int)
-					# Add the export name to the format list
 					format.append(layer.name)
 
-				def make_vertex_layer(layer: exportLayer, arrayType):
-					vertex_data[layer.name] = datamodel.make_array([layer.data_for(loop) for loop in loops], arrayType)
-					vertex_data[layer.name + "Indices"] = loop_indices
-					format.append(layer.name)
+				all_color_layers = []
 
-				for layer in get_bmesh_layers(layerGroups.color):
-					make_vertex_layer(layer, datamodel.Vector4)
-				for layer in get_bmesh_layers(layerGroups.float):
-					make_vertex_layer(layer, float)
-				for layer in get_bmesh_layers(layerGroups.int):
-					make_vertex_layer(layer, int)
-				for layer in get_bmesh_layers(layerGroups.string):
-					make_vertex_layer(layer, str)
+				if hasattr(layerGroups, 'float_color'):
+					for l in layerGroups.float_color: all_color_layers.append(l)
+				if hasattr(layerGroups, 'color'):
+					for l in layerGroups.color: all_color_layers.append(l)
+
+				color_layer_index = 0
+
+				for layer in all_color_layers:
+					export_name = layer.name
+
+					if layer.name.lower() == "color":
+						export_name = "color$0"
+
+					exp_layer = exportLayer(layer, export_name)
+					make_vertex_layer(exp_layer, datamodel.Vector4, transform_func=srgb_to_linear)
+
+					color_layer_index += 1
+
+				def get_bmesh_layers(layerGroup):
+					return [exportLayer(l) for l in layerGroup if re.match(r".*\$[0-9]+", l.name)]
+
+				for layer in get_bmesh_layers(layerGroups.float): make_vertex_layer(layer, float)
+				for layer in get_bmesh_layers(layerGroups.int):   make_vertex_layer(layer, int)
+				for layer in get_bmesh_layers(layerGroups.string): make_vertex_layer(layer, str)
 
 				bench.report("Source 2 vertex data")
 
@@ -2323,8 +2351,8 @@ skeleton
 				if two_percent and frame % two_percent:
 					print(".", debug_only=True, newline=False)
 			print(debug_only=True)
-
-		ob.data.free_tangents()
+		if ob:
+			ob.data.free_tangents()
 
 		bpy.context.window_manager.progress_update(0.99)
 		print("- Writing DMX...")

@@ -1349,7 +1349,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 					elif isBone(child) and child.name != implicit_bone_name:
 						# don't import Dags which simply wrap meshes. In some DMX animations, each bone has an empty mesh attached.
 						boneShape = child.get("shape")
-						if not boneShape or boneShape["currentState"] == None:
+						if not boneShape or "currentState" not in boneShape or boneShape["currentState"] is None:
 							yield (child, parent)
 						yield from enumerateBonesAndAttachments(child)
 					elif child.type == "DmeModel":
@@ -1415,7 +1415,22 @@ class SmdImporter(bpy.types.Operator, Logger):
 						
 						atch.matrix_local = get_transform_matrix(elem)
 					else:
-						bone = smd.a.data.edit_bones.new(self.truncate_id_name(elem.name,bpy.types.Bone))
+						# truncate lookup
+						search_name = self.truncate_id_name(elem.name, bpy.types.Bone)
+						bone = smd.a.data.edit_bones.get(search_name)
+
+						# strip namespaces from list
+						if not bone and ":" in elem.name:
+							short_name = elem.name.split(":")[-1]
+							bone = smd.a.data.edit_bones.get(self.truncate_id_name(short_name, bpy.types.Bone))
+
+						# case searching
+						if not bone:
+							target_lower = search_name.lower()
+							for b in smd.a.data.edit_bones:
+								if b.name.lower() == target_lower:
+									bone = b
+									break
 						bone.parent = parent
 						bone.tail = (0,5,0)
 						bone_matrices[bone.name] = get_transform_matrix(elem)
@@ -1714,7 +1729,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 					if not toElement: continue # SFM
 
 					bone_name = smd.boneTransformIDs.get(toElement.id)
-					bone = smd.a.pose.bones.get(bone_name) if bone_name else None
+					bone = smd.a.pose.bones.get(self.truncate_id_name(bone_name, bpy.types.Bone)) if bone_name else None
 					if not bone:
 						if self.append != 'NEW_ARMATURE' and toElement.name not in unknown_bones:
 							unknown_bones.append(toElement.name)
